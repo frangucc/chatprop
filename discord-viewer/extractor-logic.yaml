@@ -1,0 +1,124 @@
+ticker_detection_policy:
+  scope:
+    allowed_exchanges: [NASDAQ, NYSE, AMEX]
+    include_security_types: [COMMON, ADR, ETF, SHARE_CLASS]
+    exclude_otc: true
+    exclude_units_warrants_rights: true
+    min_length: 1
+    max_length: 5
+    authoritative_source: NEON
+    aliases_table: true
+    stopwords_table: true
+
+  extraction:
+    cashtag_pattern: '\$[A-Za-z]{1,5}([.-][A-Za-z0-9]{1,3})?'
+    all_caps_pattern: '\b[A-Z]{2,5}([.-][A-Za-z0-9]{1,3})?\b'
+    mixed_case_pattern: '\b[A-Za-z]{3,5}([.-][A-Za-z0-9]{1,3})?\b'
+    trader_verbs:
+      - in
+      - out
+      - over
+      - above
+      - below
+      - break
+      - hold
+      - starter
+      - added
+      - halt
+      - pop
+      - runner
+      - WW
+      - "day 2"
+
+  normalization:
+    uppercase: true
+    share_class_separator: '.'
+    trim_trailing_punct_emojis: true
+    preserve_numeric_suffixes: true
+    map_variants: true
+
+  filters:
+    reject_if_not_in_neon: true
+    reject_if_exchange_not_allowed: true
+    reject_if_in_stopwords_without_context: true
+
+  scoring:
+    weights:
+      cashtag_exact_db: 0.95
+      all_caps_db_with_context: 0.85
+      mixed_lowercase_db_with_context: 0.70
+      all_caps_db_no_context: 0.60
+      stopword_penalty: -0.40
+      stopword_no_context_penalty: -0.20
+      price_context_bonus: 0.10
+    thresholds:
+      accept: 0.80
+      low_confidence_min: 0.60
+      low_confidence_max: 0.79
+
+  aggregation:
+    window: session_or_day
+    consensus_boost:
+      unique_authors_required: 3
+      min_confidence: 0.70
+      boost: 0.10
+    price_context_boost: 0.05
+    cashtag_dominance_floor: 0.85
+
+  ambiguity_handling:
+    ambiguous_stopwords:
+      promote_if_cashtag: true
+      promote_if_all_caps_and_context_and_db_match: true
+    watchlist_thresholds:
+      mentions_min: 5
+      confidence_max: 0.79
+    periodic_recheck: true
+
+  ai_assist:
+    provider: anthropic
+    call_if:
+      single_message_confidence_between: [0.60, 0.79]
+      aggregated_confidence_between: [0.60, 0.79]
+      periodic_sweep_on_watchlist: true
+    prompt_single_message: |
+      You are a strict market data validator for US equities on NASDAQ, NYSE, or AMEX. No OTC.
+      Output JSON only.
+      TASK: From the chat message below, extract any tickers strictly listed on NASDAQ/NYSE/AMEX.
+      Normalize to uppercase; map share-class separators to dot form (e.g., BRK.B).
+      If none meet the criteria, return an empty array.
+      RETURN FORMAT:
+      {"tickers": ["..."], "confidence": 0.0}
+      MESSAGE:
+      "<raw chat line here>"
+    prompt_window_context: |
+      You are a strict market data validator for US equities on NASDAQ, NYSE, or AMEX. No OTC.
+      Output JSON only.
+      TASK: Given an ordered JSON array of recent chat messages (with author, timestamp, text),
+      decide which tokens are US-listed exchange tickers being discussed.
+      Normalize uppercase; use dot for share classes.
+      Return each inferred ticker with message_ids and a consolidated confidence.
+      RETURN FORMAT:
+      {"results":[{"ticker":"XPON","message_ids":[...],"confidence":0.0}, ...]}
+      MESSAGES_JSON:
+      <window slice JSON here>
+
+  api_validation:
+    post_ai_neon_recheck: true
+    secondary_api: polygon_or_finnhub
+    reject_on_discrepancy: true
+
+  output_format:
+    ticker: string
+    exchange: string
+    source_message_id: string
+    message_text: string
+    detection_confidence: float
+    detection_method: string
+    observed_at: datetime_iso8601
+    session_id: string
+
+  special_cases:
+    one_letter_tickers:
+      allow_if_cashtag: true
+      allow_if_all_caps_and_context: true
+      must_pass_neon: true

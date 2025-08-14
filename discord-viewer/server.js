@@ -1,0 +1,67 @@
+const { createServer } = require('http');
+const { parse } = require('url');
+const next = require('next');
+const TickerWebSocketServer = require('./lib/websocket-server');
+const RealTimeExtractor = require('./real-time-extractor');
+
+const dev = process.env.NODE_ENV !== 'production';
+const hostname = 'localhost';
+const port = 3000;
+
+const app = next({ dev });
+const handle = app.getRequestHandler();
+
+// Initialize real-time extractor
+let realTimeExtractor = null;
+let wsServer = null;
+
+app.prepare().then(async () => {
+  const server = createServer(async (req, res) => {
+    try {
+      const parsedUrl = parse(req.url, true);
+      
+      // Handle WebSocket upgrade requests
+      if (parsedUrl.pathname === '/ws') {
+        // Let the WebSocket server handle this
+        return;
+      }
+      
+      await handle(req, res, parsedUrl);
+    } catch (err) {
+      console.error('Error occurred handling', req.url, err);
+      res.statusCode = 500;
+      res.end('internal server error');
+    }
+  });
+
+  // Initialize WebSocket server for tickers
+  wsServer = new TickerWebSocketServer(server, process.env.DATABASE_URL);
+
+  // Initialize real-time extractor
+  realTimeExtractor = new RealTimeExtractor();
+  await realTimeExtractor.initialize();
+  realTimeExtractor.setWebSocketServer(wsServer);
+  realTimeExtractor.start();
+
+  // Graceful shutdown
+  const gracefulShutdown = async () => {
+    console.log('\n🛑 Shutting down server gracefully...');
+    if (realTimeExtractor) {
+      await realTimeExtractor.close();
+    }
+    if (wsServer) {
+      wsServer.close();
+    }
+    process.exit(0);
+  };
+
+  process.on('SIGINT', gracefulShutdown);
+  process.on('SIGTERM', gracefulShutdown);
+
+  server.listen(port, (err) => {
+    if (err) throw err;
+    console.log(`> Ready on http://${hostname}:${port}`);
+    console.log('> WebSocket server initialized for real-time ticker updates');
+    console.log('> Real-time ticker extractor started');
+  });
+});

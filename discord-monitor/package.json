@@ -1,0 +1,28 @@
+{
+  "name": "discord-monitor",
+  "version": "1.0.0",
+  "description": "Real-time Discord message monitor and database logger",
+  "main": "monitor.js",
+  "scripts": {
+    "start": "node monitor.js",
+    "dev": "nodemon monitor.js",
+    "setup": "node setup.js",
+    "pm2:start": "pm2 start ecosystem.config.js",
+    "pm2:stop": "pm2 stop discord-monitor",
+    "pm2:restart": "pm2 restart discord-monitor",
+    "pm2:logs": "pm2 logs discord-monitor",
+    "pm2:delete": "pm2 delete discord-monitor",
+    "pm2:save": "pm2 save",
+    "pm2:startup": "pm2 startup"
+  },
+  "dependencies": {
+    "discord.js-selfbot-v13": "^2.15.0",
+    "pg": "^8.12.0",
+    "dotenv": "^16.4.5",
+    "winston": "^3.13.0",
+    "node-cron": "^3.0.3"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.4"
+  }
+}
