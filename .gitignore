@@ -3,6 +3,7 @@
 .env.local
 .env.production
 .env.staging
+.discord-token
 
 # Dependencies
 node_modules/
