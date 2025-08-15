@@ -9,12 +9,23 @@ import TraderFilter from '@/components/TraderFilter';
 interface Stock {
   ticker: string;
   exchange: string;
-  mention_count: number;
-  detection_confidence: number;
+  mentionCount: number;
+  uniqueAuthors: number;
+  avgConfidence: number;
+  firstMention: string;
+  lastMention: string;
+  sampleMentions: string[];
+  mentionedByTrader: boolean;
+  isBlacklisted: boolean;
+  blacklistReason: string | null;
+  momentum: string;
+  // Legacy fields for compatibility
+  mention_count?: number;
+  detection_confidence?: number;
   ai_confidence?: number;
-  first_mention_timestamp: string;
-  first_mention_author: string;
-  is_genuine_stock: boolean;
+  first_mention_timestamp?: string;
+  first_mention_author?: string;
+  is_genuine_stock?: boolean;
 }
 
 export default function StocksPage() {
@@ -29,19 +40,39 @@ export default function StocksPage() {
   const [batchStatus, setBatchStatus] = useState<any>(null);
   const [selectedTraders, setSelectedTraders] = useState<any[]>([]);
   const [urlInitialized, setUrlInitialized] = useState(false);
+  const [dateRange, setDateRange] = useState('today'); // Add date range state
+
+  // Helper function to deduplicate stocks by ticker
+  const deduplicateStocks = (stocks: Stock[]) => {
+    const stockMap = new Map<string, Stock>();
+    stocks.forEach(stock => {
+      const existing = stockMap.get(stock.ticker);
+      if (!existing || stock.mentionCount > (existing.mentionCount || 0)) {
+        stockMap.set(stock.ticker, stock);
+      }
+    });
+    return Array.from(stockMap.values());
+  };
 
   const fetchStocks = async () => {
+    setLoading(true);
     try {
-      const tradersParam = selectedTraders.length > 0 
-        ? `?traders=${selectedTraders.map(t => t.username).join(',')}` 
-        : '';
-      const response = await fetch(`/api/stocks${tradersParam}`);
+      const params = new URLSearchParams();
+      if (selectedTraders.length > 0) {
+        params.set('traders', selectedTraders.map(t => t.username).join(','));
+      }
+      params.set('dateRange', dateRange);
+      
+      const response = await fetch(`/api/stocks-v3?${params.toString()}`);
       if (response.ok) {
         const data = await response.json();
-        setStocks(data);
+        const dedupedData = deduplicateStocks(data.stocks || []);
+        setStocks(dedupedData);
       }
     } catch (error) {
       console.error('Error fetching stocks:', error);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -75,10 +106,13 @@ export default function StocksPage() {
   useEffect(() => {
     setMounted(true);
     setLastUpdate(new Date());
-    setLoading(false);
+    
+    // Fetch initial data from the new API with date range
+    fetchStocks();
 
     // Initialize from URL parameters
     const urlParams = new URLSearchParams(window.location.search);
+    const url = new URL('/api/stocks-v2', window.location.origin);
     const tradersParam = urlParams.get('traders');
     const filterParam = urlParams.get('filter');
     
@@ -152,22 +186,26 @@ export default function StocksPage() {
       try {
         const message = JSON.parse(event.data);
         
-        if (message.type === 'initial_tickers' || message.type === 'ticker_update') {
-          if (message.type === 'initial_tickers') {
-            setStocks(message.data || []);
-          } else {
-            // Update specific ticker
-            setStocks(prevStocks => {
-              const existingIndex = prevStocks.findIndex(s => s.ticker === message.data.ticker);
-              if (existingIndex >= 0) {
-                const updated = [...prevStocks];
-                updated[existingIndex] = message.data;
-                return updated;
-              } else {
-                return [...prevStocks, message.data];
-              }
-            });
-          }
+        // Skip initial_tickers from WebSocket - we use the new API with date filtering now
+        if (message.type === 'initial_tickers') {
+          // Ignore initial tickers from WebSocket, we'll use our API
+          console.log('Ignoring WebSocket initial tickers, using API with date range');
+          return;
+        }
+        
+        if (message.type === 'ticker_update') {
+          // Only handle real-time updates for new tickers
+          setStocks(prevStocks => {
+            const existingIndex = prevStocks.findIndex(s => s.ticker === message.data.ticker);
+            if (existingIndex >= 0) {
+              const updated = [...prevStocks];
+              updated[existingIndex] = message.data;
+              return deduplicateStocks(updated);
+            } else {
+              const newStocks = [...prevStocks, message.data];
+              return deduplicateStocks(newStocks);
+            }
+          });
           setLastUpdate(new Date());
         }
       } catch (error) {
@@ -190,12 +228,12 @@ export default function StocksPage() {
     };
   }, []);
 
-  // Refetch stocks when traders change
+  // Refetch stocks when traders or date range change
   useEffect(() => {
     if (mounted && urlInitialized) {
       fetchStocks();
     }
-  }, [selectedTraders, mounted, urlInitialized]);
+  }, [selectedTraders, dateRange, mounted, urlInitialized]);
 
   const filteredStocks = stocks.filter(stock => 
     stock.ticker.toLowerCase().includes(filter.toLowerCase())
@@ -320,6 +358,50 @@ export default function StocksPage() {
             </Link>
           </div>
           
+          {/* Date Range Selector */}
+          <div className="flex gap-2 mb-4">
+            <button
+              onClick={() => setDateRange('today')}
+              className={`px-4 py-2 rounded-lg transition-colors ${
+                dateRange === 'today' 
+                  ? 'bg-blue-600 text-white' 
+                  : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+              }`}
+            >
+              Today
+            </button>
+            <button
+              onClick={() => setDateRange('week')}
+              className={`px-4 py-2 rounded-lg transition-colors ${
+                dateRange === 'week' 
+                  ? 'bg-blue-600 text-white' 
+                  : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+              }`}
+            >
+              This Week
+            </button>
+            <button
+              onClick={() => setDateRange('month')}
+              className={`px-4 py-2 rounded-lg transition-colors ${
+                dateRange === 'month' 
+                  ? 'bg-blue-600 text-white' 
+                  : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+              }`}
+            >
+              This Month
+            </button>
+            <button
+              onClick={() => setDateRange('all')}
+              className={`px-4 py-2 rounded-lg transition-colors ${
+                dateRange === 'all' 
+                  ? 'bg-blue-600 text-white' 
+                  : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+              }`}
+            >
+              All Time
+            </button>
+          </div>
+          
           {/* Filter */}
           <input
             type="text"
@@ -357,7 +439,7 @@ export default function StocksPage() {
             <div className="bg-orange-50 p-3 rounded-lg">
               <p className="text-sm text-orange-600 font-medium">Hot Tickers (10+)</p>
               <p className="text-2xl font-bold text-orange-900">
-                {stocks.filter(s => s.mention_count >= 10).length}
+                {stocks.filter(s => s.mentionCount >= 10).length}
               </p>
             </div>
           </div>
@@ -382,10 +464,10 @@ export default function StocksPage() {
                 }}
               >
                 {/* Card Background with Gradient */}
-                <div className={`${getCardColor(stock.mention_count)} p-6 text-white`}>
+                <div className={`${getCardColor(stock.mentionCount)} p-6 text-white`}>
                   {/* Heat Indicator */}
                   <div className="absolute top-2 right-2 text-2xl">
-                    {getHeatLevel(stock.mention_count)}
+                    {getHeatLevel(stock.mentionCount)}
                   </div>
                   
                   {/* Ticker Symbol */}
@@ -395,35 +477,32 @@ export default function StocksPage() {
                   
                   {/* Mention Count */}
                   <div className="flex items-baseline gap-2 mb-4">
-                    <span className="text-3xl font-bold">{stock.mention_count}</span>
+                    <span className="text-3xl font-bold">{stock.mentionCount}</span>
                     <span className="text-sm opacity-90">
-                      mention{stock.mention_count !== 1 ? 's' : ''}
+                      mention{stock.mentionCount !== 1 ? 's' : ''}
                     </span>
                   </div>
                   
                   {/* Confidence Score */}
                   <div className="flex items-center gap-2 mb-3">
                     <span className="text-xs opacity-75">Confidence:</span>
-                    <span className={`text-sm font-bold ${getConfidenceColor(stock.detection_confidence)}`}>
-                      {(stock.detection_confidence * 100).toFixed(0)}%
+                    <span className={`text-sm font-bold ${getConfidenceColor(stock.avgConfidence)}`}>
+                      {(stock.avgConfidence * 100).toFixed(0)}%
                     </span>
-                    {stock.ai_confidence && (
-                      <span className="text-xs opacity-75">
-                        (AI: {(stock.ai_confidence * 100).toFixed(0)}%)
-                      </span>
-                    )}
                   </div>
                   
                   {/* First Mention Info */}
-                  <div className="border-t border-white/20 pt-3 space-y-2">
-                    <div className="text-xs opacity-75">First mention</div>
-                    <div className="text-sm font-medium">
-                      {format(new Date(stock.first_mention_timestamp), 'HH:mm:ss')}
+                  {stock.firstMention && (
+                    <div className="border-t border-white/20 pt-3 space-y-2">
+                      <div className="text-xs opacity-75">First mention</div>
+                      <div className="text-sm font-medium">
+                        {format(new Date(stock.firstMention), 'HH:mm:ss')}
+                      </div>
+                      <div className="text-xs opacity-90">
+                        {stock.uniqueAuthors} unique author{stock.uniqueAuthors !== 1 ? 's' : ''}
+                      </div>
                     </div>
-                    <div className="text-xs opacity-90">
-                      by {stock.first_mention_author}
-                    </div>
-                  </div>
+                  )}
                 </div>
                 
                 {/* Exchange Info */}
@@ -432,10 +511,8 @@ export default function StocksPage() {
                     <span className="text-white/90 text-sm">
                       <span className="font-semibold">Exchange:</span> {stock.exchange}
                     </span>
-                    {stock.is_genuine_stock ? (
-                      <span className="text-green-400 text-xs">✓ Verified</span>
-                    ) : (
-                      <span className="text-yellow-400 text-xs">⚠ Pending</span>
+                    {stock.momentum && (
+                      <span className="text-yellow-300 text-xs">{stock.momentum}</span>
                     )}
                   </div>
                 </div>

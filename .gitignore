@@ -28,6 +28,23 @@ logs
 
 # IDE files
 .vscode/
+
+# Discord Chat Exporter
+DiscordChatExporter/
+DiscordChatExporter-CLI/
+exports/
+*.html
+*.csv
+
+# JSON files (allow package.json)
+*.json
+!package.json
+!tsconfig.json
+!jsconfig.json
+
+# Database exports
+*.sql
+*.dump
 .idea/
 *.swp
 *.swo

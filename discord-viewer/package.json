@@ -9,7 +9,13 @@
     "start": "NODE_ENV=production node server.js",
     "start-next": "next start",
     "lint": "next lint",
-    "migrate": "node scripts/migrate.js"
+    "migrate": "node scripts/migrate.js",
+    "export:today": "cd .. && ./export-today.sh",
+    "process:exports": "node process-discord-export.js",
+    "process:clean": "node process-discord-export.js --clean",
+    "stats": "node -e \"require('./database-v2/db-client').then(db => db.getTodaysTickers({minConfidence: 0.7}).then(console.table))\"",
+    "db:setup": "./setup-new-db.sh",
+    "db:test": "node test-new-db.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.60.0",

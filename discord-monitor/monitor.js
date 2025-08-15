@@ -22,7 +22,7 @@ const logger = winston.createLogger({
 
 // Database configuration
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL || 'postgresql://neondb_owner:npg_pM1YgZXw8zim@ep-old-violet-aewo0ts3-pooler.c-2.us-east-2.aws.neon.tech/neondb?sslmode=require',
+  connectionString: process.env.DATABASE2_URL || 'postgresql://neondb_owner:npg_Z7txvpsw2TIG@ep-dawn-bird-aeah6d7i-pooler.c-2.us-east-2.aws.neon.tech/neondb?sslmode=require&channel_binding=require',
   ssl: {
     rejectUnauthorized: false
   }

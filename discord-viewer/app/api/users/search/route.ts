@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { Pool } from 'pg';
 
+// Use the new clean database
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false }
+  connectionString: process.env.DATABASE2_URL || process.env.DATABASE_URL,
 });
 
 export async function GET(request: NextRequest) {
@@ -21,37 +21,28 @@ export async function GET(request: NextRequest) {
     
     const result = await pool.query(`
       SELECT 
-        author_name,
-        MAX(author_nickname) as author_nickname,
-        MAX(author_avatar_url) as author_avatar_url,
-        COUNT(DISTINCT ticker) as stocks_mentioned,
-        MAX(last_activity) as last_activity
-      FROM (
-        SELECT DISTINCT 
-          dm.author_name,
-          dm.author_nickname,
-          dm.author_avatar_url,
-          s.ticker,
-          dm.timestamp as last_activity
-        FROM discord_messages dm
-        INNER JOIN stocks s ON dm.author_name = s.first_mention_author
-        WHERE (
-          LOWER(dm.author_name) LIKE $1 
-          OR LOWER(COALESCE(dm.author_nickname, dm.author_name)) LIKE $1
-        )
-        AND dm.author_name IS NOT NULL
-      ) subq
-      GROUP BY author_name
-      ORDER BY stocks_mentioned DESC, last_activity DESC
+        a.username,
+        a.username as author_nickname,
+        a.avatar_url,
+        COUNT(DISTINCT td.ticker_symbol) as stocks_mentioned,
+        MAX(m.discord_timestamp) as last_activity,
+        a.is_trader
+      FROM authors a
+      LEFT JOIN messages m ON a.id = m.author_id
+      LEFT JOIN ticker_detections td ON m.id = td.message_id
+      WHERE LOWER(a.username) LIKE $1
+      GROUP BY a.id, a.username, a.avatar_url, a.is_trader
+      ORDER BY stocks_mentioned DESC, last_activity DESC NULLS LAST
       LIMIT 10
     `, [`%${searchTerm}%`]);
 
     const users = result.rows.map(row => ({
-      username: row.author_name,
+      username: row.username,
       nickname: row.author_nickname,
-      avatar: row.author_avatar_url,
-      stocksMentioned: parseInt(row.stocks_mentioned),
-      lastActivity: row.last_activity
+      avatar: row.avatar_url,
+      stocksMentioned: parseInt(row.stocks_mentioned) || 0,
+      lastActivity: row.last_activity,
+      isTrader: row.is_trader || false
     }));
 
     return NextResponse.json(users);

@@ -84,7 +84,8 @@ export default function TickerChatsPage() {
       const tradersParam = selectedTraders.length > 0 
         ? `&traders=${selectedTraders.map(t => t.username).join(',')}` 
         : '';
-      const response = await fetch(`/api/messages?ticker=${ticker}${tradersParam}`);
+      // Use the new messages API that works with the clean database
+      const response = await fetch(`/api/messages-v2?ticker=${ticker}${tradersParam}`);
       const data = await response.json();
       
       if (response.ok) {

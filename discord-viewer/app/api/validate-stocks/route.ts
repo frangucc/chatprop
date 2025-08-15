@@ -89,7 +89,7 @@ async function analyzeStockContext(ticker: string, messages: string[]): Promise<
     const sampleMessages = messages.slice(0, 10).join('\n');
     
     const response = await anthropic.messages.create({
-      model: 'claude-3-haiku-20240307',
+      model: 'claude-3-5-sonnet-20241022',  // Latest Claude 3.5 Sonnet
       max_tokens: 200,
       messages: [{
         role: 'user',
