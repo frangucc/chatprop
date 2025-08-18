@@ -16,18 +16,13 @@ export async function POST(request: NextRequest) {
 
     // Add to blacklist
     await pool.query(`
-      INSERT INTO ticker_blacklist (ticker, reason, context_note, example_messages, added_by) 
-      VALUES ($1, $2, $3, $4, 'user')
+      INSERT INTO ticker_blacklist (ticker, reason, added_by, is_permanent) 
+      VALUES ($1, $2, 'user', true)
       ON CONFLICT (ticker) DO UPDATE SET 
         reason = EXCLUDED.reason,
-        context_note = EXCLUDED.context_note,
-        example_messages = EXCLUDED.example_messages
-    `, [ticker.toUpperCase(), reason || 'User marked as false positive', contextNote, exampleMessages]);
-
-    // Remove from stocks table
-    await pool.query(`
-      DELETE FROM stocks WHERE ticker = $1
-    `, [ticker.toUpperCase()]);
+        is_permanent = true,
+        updated_at = CURRENT_TIMESTAMP
+    `, [ticker.toUpperCase(), reason || 'User marked as false positive']);
 
     return NextResponse.json({ success: true });
   } catch (error) {

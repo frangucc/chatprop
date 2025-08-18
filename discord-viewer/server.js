@@ -1,8 +1,8 @@
 const { createServer } = require('http');
 const { parse } = require('url');
 const next = require('next');
+const RealTimeExtractorNotify = require('./real-time-extractor-notify');
 const TickerWebSocketServer = require('./lib/websocket-server');
-const RealTimeExtractor = require('./real-time-extractor');
 
 const dev = process.env.NODE_ENV !== 'production';
 const hostname = 'localhost';
@@ -35,13 +35,12 @@ app.prepare().then(async () => {
   });
 
   // Initialize WebSocket server for tickers
-  wsServer = new TickerWebSocketServer(server, process.env.DATABASE_URL);
+  wsServer = new TickerWebSocketServer(server, process.env.DATABASE2_URL);
 
-  // Initialize real-time extractor
-  realTimeExtractor = new RealTimeExtractor();
+  // Initialize real-time extractor with NOTIFY
+  realTimeExtractor = new RealTimeExtractorNotify();
   await realTimeExtractor.initialize();
   realTimeExtractor.setWebSocketServer(wsServer);
-  realTimeExtractor.start();
 
   // Graceful shutdown
   const gracefulShutdown = async () => {

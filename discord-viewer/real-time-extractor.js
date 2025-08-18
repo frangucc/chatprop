@@ -9,12 +9,12 @@ require('dotenv').config({ path: '.env.local' });
 class RealTimeExtractor {
   constructor() {
     this.extractor = new TickerExtractor(
-      process.env.DATABASE_URL,
+      process.env.DATABASE2_URL,
       process.env.ANTHROPIC_API_KEY
     );
     
     this.pool = new Pool({
-      connectionString: process.env.DATABASE_URL,
+      connectionString: process.env.DATABASE2_URL,
       ssl: { rejectUnauthorized: false }
     });
     
@@ -32,8 +32,8 @@ class RealTimeExtractor {
     // Get the last processed message ID
     try {
       const result = await this.pool.query(`
-        SELECT MAX(id) as last_id FROM discord_messages 
-        WHERE timestamp >= CURRENT_DATE
+        SELECT MAX(id) as last_id FROM messages 
+        WHERE discord_timestamp >= CURRENT_DATE AT TIME ZONE 'America/Chicago'
       `);
       this.lastProcessedId = result.rows[0]?.last_id || null;
       console.log(`Starting from message ID: ${this.lastProcessedId || 'beginning'}`);
@@ -49,9 +49,10 @@ class RealTimeExtractor {
     try {
       // Get new messages since last check
       let query = `
-        SELECT id, content, author_id, author_name, timestamp 
-        FROM discord_messages 
-        WHERE timestamp >= CURRENT_DATE
+        SELECT m.id, m.content, m.author_id, a.username as author_name, m.discord_timestamp as timestamp 
+        FROM messages m
+        JOIN authors a ON m.author_id = a.id
+        WHERE m.discord_timestamp >= CURRENT_DATE AT TIME ZONE 'America/Chicago'
       `;
       
       const params = [];

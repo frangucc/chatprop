@@ -32,6 +32,9 @@ export default function TickerChatsPage() {
   const [contextNote, setContextNote] = useState('');
   const [selectedExamples, setSelectedExamples] = useState<Set<string>>(new Set());
   const [selectedTraders, setSelectedTraders] = useState<any[]>([]);
+  const [priceData, setPriceData] = useState<any>(null);
+  const [loadingPrice, setLoadingPrice] = useState(false);
+  const [messagePrices, setMessagePrices] = useState<{ [key: string]: any }>({});
 
   useEffect(() => {
     // Initialize traders from URL parameters
@@ -77,6 +80,55 @@ export default function TickerChatsPage() {
   useEffect(() => {
     fetchTickerMessages();
   }, [selectedTraders]);
+
+  // Fetch price data for all messages
+  useEffect(() => {
+    if (messages.length > 0) {
+      // Fetch price for first mention of the day (last in array since ordered DESC)
+      fetchPriceData(messages[messages.length - 1].timestamp);
+      
+      // Fetch prices for all messages
+      messages.forEach(async (message) => {
+        try {
+          // Convert timestamp to ISO format for API
+          const isoTimestamp = new Date(message.timestamp).toISOString();
+          const response = await fetch(`/api/databento?symbol=${ticker}&timestamp=${isoTimestamp}`);
+          const data = await response.json();
+          if (response.ok && data.price) {
+            setMessagePrices(prev => ({
+              ...prev,
+              [message.id]: {
+                ...data,
+                formattedPrice: `$${data.price.toFixed(2)}`
+              }
+            }));
+          }
+          // Don't log errors for expected failures (no data available)
+        } catch (error) {
+          // Silently handle fetch errors - this is expected for some tickers/timestamps
+        }
+      });
+    }
+  }, [messages, ticker]);
+
+  const fetchPriceData = async (timestamp: string) => {
+    setLoadingPrice(true);
+    try {
+      const isoTimestamp = new Date(timestamp).toISOString();
+      const response = await fetch(`/api/databento?symbol=${ticker}&timestamp=${isoTimestamp}`);
+      const data = await response.json();
+      if (response.ok && data.price) {
+        setPriceData({
+          ...data,
+          formattedPrice: `$${data.price.toFixed(2)}`
+        });
+      }
+    } catch (error) {
+      console.error('Error fetching price data:', error);
+    } finally {
+      setLoadingPrice(false);
+    }
+  };
 
   const fetchTickerMessages = async () => {
     setLoading(true);
@@ -272,6 +324,18 @@ export default function TickerChatsPage() {
                 </span>
               </div>
               <p className="text-gray-600">All messages mentioning this ticker</p>
+              
+              {/* Price Display */}
+              {!loadingPrice && priceData && priceData.price && (
+                <div className="mt-4">
+                  <div className="text-5xl font-black text-green-600">
+                    {priceData.formattedPrice}
+                  </div>
+                  <p className="text-sm text-gray-500 mt-1">
+                    Price at first mention
+                  </p>
+                </div>
+              )}
             </div>
             
             <div className="flex gap-2">
@@ -395,26 +459,25 @@ export default function TickerChatsPage() {
                       <span className="font-semibold text-gray-900">
                         {message.author_nickname || message.author_name}
                       </span>
-                      {message.author_nickname && (
-                        <span className="text-xs text-gray-500">
-                          @{message.author_name}
-                        </span>
-                      )}
                       <span className="text-xs text-gray-400">•</span>
-                      <span className="text-xs text-gray-500">
-                        {format(new Date(message.timestamp), 'HH:mm:ss')}
-                      </span>
-                      {message.timestamp_edited && (
-                        <span className="text-xs text-gray-400 italic">(edited)</span>
-                      )}
+                      <div className="text-xs text-gray-500">
+                        {(() => {
+                          const date = new Date(message.timestamp);
+                          // The timestamp is stored as UTC but represents CST time
+                          // No conversion needed, just display it
+                          return `${date.toLocaleDateString()} ${date.toLocaleTimeString('en-US', { 
+                            hour: '2-digit', 
+                            minute: '2-digit',
+                            second: '2-digit',
+                            hour12: true 
+                          })} CST`;
+                        })()}
+                      </div>
                     </div>
                     
-                    <div className="text-gray-800 break-words">
-                      {message.content ? (
-                        <p>{highlightTicker(message.content)}</p>
-                      ) : (
-                        <p className="text-gray-400 italic">No content</p>
-                      )}
+                    {/* Message Content */}
+                    <div className="text-gray-700 whitespace-pre-wrap">
+                      {message.content}
                     </div>
                     
                     {/* Attachments & Embeds */}
@@ -432,11 +495,14 @@ export default function TickerChatsPage() {
                     </div>
                   </div>
                   
-                  {/* Right side: Timestamp and Example Checkbox */}
+                  {/* Right side: Price and Example Checkbox */}
                   <div className="flex-shrink-0 text-right flex flex-col items-end gap-2">
-                    <div className="text-sm text-gray-500">
-                      {format(new Date(message.timestamp), 'MMM dd, yyyy')}
-                    </div>
+                    {/* Price */}
+                    {messagePrices[message.id] && (
+                      <div className="text-2xl font-bold text-green-600">
+                        {messagePrices[message.id].formattedPrice}
+                      </div>
+                    )}
                     
                     {/* Example Message Checkbox - only show when in blacklist mode */}
                     {showNoteInput && (

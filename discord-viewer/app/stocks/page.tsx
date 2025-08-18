@@ -28,6 +28,12 @@ interface Stock {
   is_genuine_stock?: boolean;
 }
 
+interface LivePrice {
+  symbol: string;
+  price: number | null;
+  ts_event_ns: number | null;
+}
+
 export default function StocksPage() {
   const router = useRouter();
   const [stocks, setStocks] = useState<Stock[]>([]);
@@ -41,6 +47,7 @@ export default function StocksPage() {
   const [selectedTraders, setSelectedTraders] = useState<any[]>([]);
   const [urlInitialized, setUrlInitialized] = useState(false);
   const [dateRange, setDateRange] = useState('today'); // Add date range state
+  const [livePrices, setLivePrices] = useState<Map<string, number>>(new Map());
 
   // Helper function to deduplicate stocks by ticker
   const deduplicateStocks = (stocks: Stock[]) => {
@@ -68,6 +75,115 @@ export default function StocksPage() {
         const data = await response.json();
         const dedupedData = deduplicateStocks(data.stocks || []);
         setStocks(dedupedData);
+        
+        // Fetch live prices for all tickers (ordered by mention count)
+        if (dedupedData.length > 0) {
+          const ordered = dedupedData
+            .sort((a, b) => b.mentionCount - a.mentionCount)
+            .map(s => s.ticker.toUpperCase());
+          const tickers = ordered.join(',');
+          
+          console.log(`Fetching live prices for ${dedupedData.length} tickers (ordered by mentions):`);
+          console.log(`Top 10: ${dedupedData.slice(0, 10).map(s => `${s.ticker}(${s.mentionCount})`).join(', ')}`);
+
+          try {
+            // Subscribe top tickers in batches to avoid overwhelming backend
+            const symbolsArr = ordered;
+            const batchSize = 20;
+            const delay = (ms: number) => new Promise(res => setTimeout(res, ms));
+            const batches: string[][] = [];
+            for (let i = 0; i < symbolsArr.length; i += batchSize) {
+              batches.push(symbolsArr.slice(i, i + batchSize));
+            }
+            (async () => {
+              for (let i = 0; i < batches.length; i++) {
+                const batch = batches[i];
+                try {
+                  await fetch('/api/live/subscribe', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ symbols: batch })
+                  });
+                } catch (err) {
+                  console.warn(`subscribe batch ${i + 1}/${batches.length} failed:`, err);
+                }
+                // brief pause to let backend establish subscriptions
+                await delay(150);
+              }
+            })();
+
+            // Kick off a background historical ingest to seed last prices (non-blocking)
+            // Uses current timestamp by default on the API side; safe to ignore result.
+            fetch('/api/live/ingest_hist', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ symbols: symbolsArr.slice(0, 50) })
+            }).catch(err => console.warn('ingest_hist failed (non-blocking):', err));
+
+            // Fetch via proxy to avoid CORS
+            // Prioritize top 40 for initial price fetch to surface most-mentioned quickly
+            const prioritized = ordered.slice(0, 40);
+            const chunkedFetch = async (symbols: string[], chunkSize = 30, retry = 1) => {
+              const chunks: string[][] = [];
+              for (let i = 0; i < symbols.length; i += chunkSize) {
+                chunks.push(symbols.slice(i, i + chunkSize));
+              }
+              const delay = (ms: number) => new Promise(res => setTimeout(res, ms));
+              const results: LivePrice[] = [];
+              for (let idx = 0; idx < chunks.length; idx++) {
+                const chunk = chunks[idx];
+                const qs = encodeURIComponent(chunk.join(','));
+                let attempt = 0;
+                while (true) {
+                  try {
+                    const res = await fetch(`/api/live/prices?symbols=${qs}`);
+                    if (res.ok) {
+                      const data: LivePrice[] = await res.json();
+                      results.push(...data);
+                      break;
+                    } else {
+                      if (attempt < retry) {
+                        attempt++;
+                        await delay(250);
+                        continue;
+                      }
+                      console.warn(`prices chunk ${idx + 1}/${chunks.length} failed:`, res.status);
+                      break;
+                    }
+                  } catch (e) {
+                    if (attempt < retry) {
+                      attempt++;
+                      await delay(250);
+                      continue;
+                    }
+                    console.warn(`prices chunk ${idx + 1}/${chunks.length} error:`, e);
+                    break;
+                  }
+                }
+                // small spacing between chunks
+                await delay(100);
+              }
+              return results;
+            };
+
+            const prices = await chunkedFetch(prioritized, 30, 1);
+            const priceMap = new Map<string, number>();
+            let priceCount = 0;
+            prices.forEach(p => {
+              if (p.price !== null) {
+                priceMap.set(p.symbol, p.price);
+                priceCount++;
+              }
+            });
+            setLivePrices(priceMap);
+            console.log(`Received ${priceCount} live prices out of ${prices.length} tickers`);
+            if (priceCount > 0) {
+              console.log('Sample prices:', Array.from(priceMap.entries()).slice(0, 5));
+            }
+          } catch (error) {
+            console.error('Error fetching live prices:', error);
+          }
+        }
       }
     } catch (error) {
       console.error('Error fetching stocks:', error);
@@ -75,6 +191,86 @@ export default function StocksPage() {
       setLoading(false);
     }
   };
+
+  // Auto refresh prices every 2 seconds
+  useEffect(() => {
+    if (stocks.length === 0) return;
+    const sorted = [...stocks].sort((a, b) => b.mentionCount - a.mentionCount);
+    const symbols = sorted.map(s => s.ticker.toUpperCase());
+    // Prioritize top 60 on each poll to surface most-mentioned first
+    const prioritized = symbols.slice(0, 60);
+    const query = prioritized.join(',');
+    
+    // Subscribe to all symbols first
+    const subscribeToSymbols = async () => {
+      try {
+        const batchSize = 15;
+        const delay = (ms: number) => new Promise(res => setTimeout(res, ms));
+        for (let i = 0; i < symbols.length; i += batchSize) {
+          const batch = symbols.slice(i, i + batchSize);
+          await fetch('/api/live/subscribe', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ symbols: batch })
+          }).catch(err => console.warn('subscribe batch failed:', err));
+          await delay(200);
+        }
+        console.log(`Subscribed in ${Math.ceil(symbols.length / batchSize)} batches`);
+      } catch (e) {
+        console.warn('Failed to subscribe to symbols:', e);
+      }
+    };
+    
+    subscribeToSymbols();
+
+    const fetchLoop = async () => {
+      try {
+        const symbolsArr = prioritized;
+        const chunkSize = 15;
+        const chunks: string[][] = [];
+        for (let i = 0; i < symbolsArr.length; i += chunkSize) {
+          chunks.push(symbolsArr.slice(i, i + chunkSize));
+        }
+        const delay = (ms: number) => new Promise(res => setTimeout(res, ms));
+        const aggregate: LivePrice[] = [];
+        for (let i = 0; i < chunks.length; i++) {
+          const chunk = chunks[i];
+          const qs = encodeURIComponent(chunk.join(','));
+          try {
+            const res = await fetch(`/api/live/prices?symbols=${qs}`);
+            if (res.ok) {
+              const data: LivePrice[] = await res.json();
+              aggregate.push(...data);
+            } else {
+              console.warn(`[poll] chunk ${i + 1}/${chunks.length} failed:`, res.status);
+            }
+          } catch (e) {
+            console.warn(`poll chunk ${i + 1}/${chunks.length} error:`, e);
+          }
+          await delay(150);
+        }
+        const priceMap = new Map<string, number>();
+        let priceCount = 0;
+        aggregate.forEach(p => {
+          if (p.price !== null) {
+            priceMap.set(p.symbol, p.price);
+            priceCount++;
+          }
+        });
+        setLivePrices(priceMap);
+        if (priceCount > 0) {
+          console.log(`[poll] ${priceCount}/${aggregate.length} live prices`, Array.from(priceMap.entries()).slice(0, 3));
+        }
+      } catch (e) {
+        console.warn('poll prices error:', e);
+      }
+    };
+
+    // kick off immediately and then every 2s
+    fetchLoop();
+    const id = setInterval(fetchLoop, 2000);
+    return () => clearInterval(id);
+  }, [stocks]);
 
   // Update URL parameters
   const updateUrl = (traders: any[], filterText: string) => {
@@ -251,15 +447,19 @@ export default function StocksPage() {
     if (mention_count >= 20) return '🔥🔥🔥';
     if (mention_count >= 10) return '🔥🔥';
     if (mention_count >= 5) return '🔥';
-    return '📈';
+    return '';
   };
 
 
 
   const getConfidenceColor = (confidence: number) => {
-    if (confidence >= 0.9) return 'text-green-400';
-    if (confidence >= 0.8) return 'text-yellow-400';
-    return 'text-red-400';
+    return 'text-white';
+  };
+
+  // Price formatter: truncate to 2 decimals (no rounding)
+  const formatPriceTrunc2 = (p: number) => {
+    const truncated = Math.floor(p * 100) / 100;
+    return truncated.toFixed(2);
   };
 
   // Handle batch processing
@@ -319,8 +519,15 @@ export default function StocksPage() {
                 Real-time ticker extraction from Discord messages
               </p>
             </div>
-            <div className="flex items-center gap-6 text-sm">
-              <div className="flex items-center gap-2">
+            <div className="flex items-center gap-4">
+              <a
+                href="/messages"
+                className="px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors flex items-center gap-2"
+              >
+                <span>💬</span>
+                <span>View Messages</span>
+              </a>
+              <div className="flex items-center gap-2 text-sm">
                 <div className={`w-3 h-3 rounded-full ${connected ? 'bg-green-400' : 'bg-red-400'}`}></div>
                 <span className="text-gray-600">
                   {connected ? 'Connected' : 'Disconnected'}
@@ -331,24 +538,6 @@ export default function StocksPage() {
                   Last update: {format(lastUpdate, 'HH:mm:ss')}
                 </div>
               )}
-              
-              {/* Batch Processing Button */}
-              <button
-                onClick={startBatchProcess}
-                disabled={batchProcessing}
-                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white rounded-lg transition-colors flex items-center gap-2"
-              >
-                {batchProcessing ? (
-                  <>
-                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
-                    Processing...
-                  </>
-                ) : (
-                  <>
-                    🔄 Process Today's Messages
-                  </>
-                )}
-              </button>
             </div>
             <Link 
               href="/"
@@ -437,7 +626,7 @@ export default function StocksPage() {
               </p>
             </div>
             <div className="bg-orange-50 p-3 rounded-lg">
-              <p className="text-sm text-orange-600 font-medium">Hot Tickers (10+)</p>
+              <p className="text-sm text-orange-800 font-medium">Hot Tickers (10+)</p>
               <p className="text-2xl font-bold text-orange-900">
                 {stocks.filter(s => s.mentionCount >= 10).length}
               </p>
@@ -483,11 +672,14 @@ export default function StocksPage() {
                     </span>
                   </div>
                   
-                  {/* Confidence Score */}
+                  {/* Live Price */}
                   <div className="flex items-center gap-2 mb-3">
-                    <span className="text-xs opacity-75">Confidence:</span>
-                    <span className={`text-sm font-bold ${getConfidenceColor(stock.avgConfidence)}`}>
-                      {(stock.avgConfidence * 100).toFixed(0)}%
+                    <span className="text-xs opacity-75">Last:</span>
+                    <span className="text-lg font-bold">
+                      {livePrices.has(stock.ticker) 
+                        ? `$${formatPriceTrunc2(livePrices.get(stock.ticker)! as number)}`
+                        : '-'
+                      }
                     </span>
                   </div>
                   
@@ -496,7 +688,7 @@ export default function StocksPage() {
                     <div className="border-t border-white/20 pt-3 space-y-2">
                       <div className="text-xs opacity-75">First mention</div>
                       <div className="text-sm font-medium">
-                        {format(new Date(stock.firstMention), 'HH:mm:ss')}
+                        {format(new Date(stock.firstMention), 'h:mmaaa')} CST
                       </div>
                       <div className="text-xs opacity-90">
                         {stock.uniqueAuthors} unique author{stock.uniqueAuthors !== 1 ? 's' : ''}
@@ -505,17 +697,6 @@ export default function StocksPage() {
                   )}
                 </div>
                 
-                {/* Exchange Info */}
-                <div className="bg-white/10 p-3">
-                  <div className="flex justify-between items-center">
-                    <span className="text-white/90 text-sm">
-                      <span className="font-semibold">Exchange:</span> {stock.exchange}
-                    </span>
-                    {stock.momentum && (
-                      <span className="text-yellow-300 text-xs">{stock.momentum}</span>
-                    )}
-                  </div>
-                </div>
               </div>
             ))}
           </div>

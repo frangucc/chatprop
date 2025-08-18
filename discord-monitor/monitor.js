@@ -39,59 +39,50 @@ const client = new Client({
   checkUpdate: false
 });
 
-// Prepare SQL query for inserting messages
-const insertMessageQuery = `INSERT INTO discord_messages (
-    id, channel_id, author_id, author_name, author_nickname,
-    content, timestamp, timestamp_edited, attachments, embeds, mentions, reactions,
-    message_type, is_pinned, author_discriminator, author_is_bot, author_avatar_url,
-    guild_id, guild_name, channel_name, channel_category, roles
-  ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
+// Prepare SQL query for inserting messages (v2 schema)
+const insertMessageQuery = `INSERT INTO messages (
+    id, channel_id, author_id, content, message_type,
+    is_edited, is_pinned, has_attachments, has_embeds, discord_timestamp
+  ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
   ON CONFLICT (id) DO UPDATE SET
     content = EXCLUDED.content,
-    timestamp_edited = EXCLUDED.timestamp_edited
+    is_edited = true,
+    edited_at = CURRENT_TIMESTAMP
   RETURNING *`;
 
 // Function to save message to database
 async function saveMessage(message) {
   try {
-    const attachments = message.attachments.map(a => ({
-      name: a.name,
-      url: a.url,
-      size: a.size
-    }));
-    const embeds = message.embeds.map(e => e.toJSON());
-    const mentions = message.mentions.users.map(u => u.id);
-    const roles = message.member?.roles?.cache?.map(r => ({
-      id: r.id,
-      name: r.name,
-      color: r.hexColor
-    })) || [];
+    // First ensure author exists
+    await pool.query(
+      `INSERT INTO authors (id, username, discriminator, is_bot, avatar_url) 
+       VALUES ($1, $2, $3, $4, $5) 
+       ON CONFLICT (id) DO UPDATE SET 
+         username = EXCLUDED.username,
+         avatar_url = EXCLUDED.avatar_url`,
+      [
+        message.author.id,
+        message.author.username,
+        message.author.discriminator || '0',
+        message.author.bot || false,
+        message.author.avatarURL() || null
+      ]
+    );
 
+    // Then insert the message (v2 schema)
     const result = await pool.query(
       insertMessageQuery,
       [
         message.id,                                          // id
         message.channel.id,                                  // channel_id
         message.author.id,                                   // author_id
-        message.author.username,                             // author_name
-        message.member?.nickname || message.author.username, // author_nickname
         message.content,                                     // content
-        message.createdAt,                                   // timestamp
-        message.editedAt,                                    // timestamp_edited
-        JSON.stringify(attachments),                        // attachments
-        JSON.stringify(embeds),                             // embeds
-        JSON.stringify(mentions),                           // mentions
-        JSON.stringify([]),                                 // reactions
         'DEFAULT',                                          // message_type
+        message.editedAt !== null,                          // is_edited
         message.pinned || false,                            // is_pinned
-        message.author.discriminator || '0',                // author_discriminator
-        message.author.bot || false,                        // author_is_bot
-        message.author.avatarURL() || null,                 // author_avatar_url
-        message.guild?.id || null,                          // guild_id
-        message.guild?.name || null,                        // guild_name
-        message.channel.name,                               // channel_name
-        message.channel.parent?.name || null,               // channel_category
-        JSON.stringify(roles)                               // roles
+        message.attachments.size > 0,                       // has_attachments
+        message.embeds.length > 0,                          // has_embeds
+        message.createdAt                                   // discord_timestamp
       ]
     );
 
@@ -167,9 +158,12 @@ client.on('messageReactionAdd', async (reaction, user) => {
     users: r.users.cache.map(u => u.id)
   }));
   
+  // For v2 schema, store reactions in separate table
   await pool.query(
-    'UPDATE discord_messages SET reactions = $1 WHERE id = $2',
-    [JSON.stringify(reactions), message.id]
+    `INSERT INTO message_reactions (message_id, user_id, emoji_name, created_at) 
+     VALUES ($1, $2, $3, CURRENT_TIMESTAMP) 
+     ON CONFLICT (message_id, user_id, emoji_name) DO NOTHING`,
+    [message.id, user.id, reaction.emoji.name]
   );
 });
 

@@ -22,8 +22,8 @@ export async function GET(request: Request) {
     
     switch (dateRange) {
       case 'today':
-        // For timezone-aware columns, filter for today in CST
-        dateFilter = `AND m.discord_timestamp AT TIME ZONE 'America/Chicago' >= (CURRENT_DATE::date)::timestamp`;
+        // Filter for today in Chicago time - messages from midnight CST today
+        dateFilter = `AND m.discord_timestamp >= date_trunc('day', NOW() AT TIME ZONE 'America/Chicago') AT TIME ZONE 'America/Chicago'`;
         break;
       case 'week':
         dateFilter = `AND m.discord_timestamp >= NOW() - INTERVAL '7 days'`;
@@ -36,7 +36,7 @@ export async function GET(request: Request) {
         break;
       default:
         // Default to today
-        dateFilter = `AND m.discord_timestamp AT TIME ZONE 'America/Chicago' >= (CURRENT_DATE::date)::timestamp`;
+        dateFilter = `AND m.discord_timestamp >= date_trunc('day', NOW() AT TIME ZONE 'America/Chicago') AT TIME ZONE 'America/Chicago'`;
     }
     
     // Build trader filter
@@ -93,7 +93,7 @@ export async function GET(request: Request) {
       )
       SELECT * FROM blacklist_check
       WHERE is_blacklisted = false 
-        OR (is_blacklisted = true AND avg_confidence >= COALESCE(min_confidence_required, 0.95))
+        OR (is_blacklisted = true AND blacklist_type != 'permanent' AND avg_confidence >= COALESCE(min_confidence_required, 0.95))
       ORDER BY mention_count DESC, avg_confidence DESC
       LIMIT 100
     `;
