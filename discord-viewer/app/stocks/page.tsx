@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import { format } from 'date-fns';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
@@ -47,7 +47,130 @@ export default function StocksPage() {
   const [selectedTraders, setSelectedTraders] = useState<any[]>([]);
   const [urlInitialized, setUrlInitialized] = useState(false);
   const [dateRange, setDateRange] = useState('today'); // Add date range state
-  const [livePrices, setLivePrices] = useState<Map<string, number>>(new Map());
+  // Store price and last event timestamp per symbol
+  const [livePrices, setLivePrices] = useState<Map<string, { price: number; ts: number | null }>>(new Map());
+  // Tick every second to update 'seconds ago' counters
+  const [nowTick, setNowTick] = useState<number>(Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNowTick(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+  // Track consecutive nulls per symbol for backfill logic
+  const missingCountsRef = React.useRef<Map<string, number>>(new Map());
+  const backfillingRef = React.useRef<Set<string>>(new Set());
+  // Track manual refresh in-flight state per ticker
+  const [refreshing, setRefreshing] = useState<Set<string>>(new Set());
+  const [refreshingInfo, setRefreshingInfo] = useState<Map<string, { started: number; lastTs: number | null }>>(new Map());
+  // Priority boost for next poll cycles when user manually refreshes
+  const priorityBoostRef = React.useRef<Map<string, number>>(new Map());
+
+  const refreshTicker = async (symbol: string) => {
+    const key = symbol.toUpperCase();
+    const currentEntry = livePrices.get(key) || null;
+    const currentTs = currentEntry?.ts ?? null;
+    const currentPrice = currentEntry?.price ?? null;
+    console.log(`[refresh] start ${key} prev price=${currentPrice ?? '∅'} prev ts=${currentTs ?? '∅'}`);
+    setRefreshing(prev => {
+      const next = new Set(prev);
+      next.add(key);
+      return next;
+    });
+    setRefreshingInfo(prev => {
+      const next = new Map(prev);
+      next.set(key, { started: Date.now(), lastTs: currentTs });
+      return next;
+    });
+    try {
+      // Ensure backend is subscribed for this symbol immediately
+      fetch('/api/live/subscribe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbols: [key] })
+      }).catch(() => {});
+
+      // Boost priority for the next few polls so it appears in the first chunk
+      const boosts = priorityBoostRef.current;
+      boosts.set(key, 5);
+
+      const qs = encodeURIComponent(key);
+      const tryFetch = async (): Promise<LivePrice | null> => {
+        try {
+          const r = await fetch(`/api/live/prices?symbols=${qs}`);
+          if (!r.ok) return null;
+          const arr: LivePrice[] = await r.json();
+          const item = arr.find(p => p.symbol.toUpperCase() === key) || null;
+          if (item) {
+            console.log(`[refresh] fetch ${key} got price=${item.price ?? '∅'} ts=${item.ts_event_ns ?? '∅'}`);
+          } else {
+            console.log(`[refresh] fetch ${key} returned no item`);
+          }
+          return item;
+        } catch { return null; }
+      };
+
+      const sleep = (ms: number) => new Promise(res => setTimeout(res, ms));
+      const applyAndMaybeClear = (item: LivePrice | null): boolean => {
+        if (!item || item.price === null) return false;
+        const ts = item.ts_event_ns || null;
+        setLivePrices(prev => {
+          const next = new Map(prev);
+          next.set(key, { price: item.price as number, ts });
+          return next;
+        });
+        if ((item.price !== currentPrice) || (ts && ts !== currentTs)) {
+          const reason = (item.price !== currentPrice)
+            ? 'price_change'
+            : 'ts_change';
+          console.log(`[refresh] clear spinner ${key} due to ${reason}: ${currentPrice ?? '∅'}@${currentTs ?? '∅'} -> ${item.price}@${ts ?? '∅'}`);
+          setRefreshing(prev => { const n = new Set(prev); n.delete(key); return n; });
+          setRefreshingInfo(prev => { const n = new Map(prev); n.delete(key); return n; });
+          return true;
+        }
+        return false;
+      };
+
+      let gotNew = applyAndMaybeClear(await tryFetch());
+      if (!gotNew) {
+        await sleep(200);
+        gotNew = applyAndMaybeClear(await tryFetch());
+      }
+      if (!gotNew) {
+        await sleep(200);
+        gotNew = applyAndMaybeClear(await tryFetch());
+      }
+      if (!gotNew) {
+        const offsets = [0, -15, -60];
+        for (const off of offsets) {
+          try {
+            console.log(`[refresh] backfill ${key} at offset ${off} min`);
+            await fetch('/api/live/ingest_hist', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ symbols: [key], timestamp: new Date(Date.now() + off * 60 * 1000).toISOString() })
+            });
+          } catch {}
+          await sleep(250);
+          gotNew = applyAndMaybeClear(await tryFetch());
+          if (gotNew) break;
+        }
+      }
+      if (!gotNew) {
+        await sleep(800);
+        gotNew = applyAndMaybeClear(await tryFetch());
+      }
+    } catch (e) {
+      console.warn('manual refresh failed for', symbol, e);
+    } finally {
+      // Safety timeout: stop spinner after 6s if no update observed via polling
+      setTimeout(() => {
+        if (refreshing.has(key)) {
+          console.log(`[refresh] safety-timeout clearing spinner for ${key}`);
+        }
+        setRefreshing(prev => { const n = new Set(prev); n.delete(key); return n; });
+        setRefreshingInfo(prev => { const n = new Map(prev); n.delete(key); return n; });
+      }, 6000);
+    }
+  };
 
   // Helper function to deduplicate stocks by ticker
   const deduplicateStocks = (stocks: Stock[]) => {
@@ -75,119 +198,101 @@ export default function StocksPage() {
         const data = await response.json();
         const dedupedData = deduplicateStocks(data.stocks || []);
         setStocks(dedupedData);
-        
-        // Fetch live prices for all tickers (ordered by mention count)
+        // Show UI immediately; run price work in background
+        setLoading(false);
+
+        // Fetch live prices for all tickers (ordered by mention count) in background
         if (dedupedData.length > 0) {
-          const ordered = dedupedData
-            .sort((a, b) => b.mentionCount - a.mentionCount)
-            .map(s => s.ticker.toUpperCase());
-          const tickers = ordered.join(',');
-          
-          console.log(`Fetching live prices for ${dedupedData.length} tickers (ordered by mentions):`);
-          console.log(`Top 10: ${dedupedData.slice(0, 10).map(s => `${s.ticker}(${s.mentionCount})`).join(', ')}`);
+          (async () => {
+            const ordered = dedupedData
+              .sort((a, b) => b.mentionCount - a.mentionCount)
+              .map(s => s.ticker.toUpperCase());
+            console.log(`Fetching live prices for ${dedupedData.length} tickers (ordered by mentions):`);
+            console.log(`Top 10: ${dedupedData.slice(0, 10).map(s => `${s.ticker}(${s.mentionCount})`).join(', ')}`);
 
-          try {
-            // Subscribe top tickers in batches to avoid overwhelming backend
-            const symbolsArr = ordered;
-            const batchSize = 20;
-            const delay = (ms: number) => new Promise(res => setTimeout(res, ms));
-            const batches: string[][] = [];
-            for (let i = 0; i < symbolsArr.length; i += batchSize) {
-              batches.push(symbolsArr.slice(i, i + batchSize));
-            }
-            (async () => {
-              for (let i = 0; i < batches.length; i++) {
-                const batch = batches[i];
-                try {
-                  await fetch('/api/live/subscribe', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ symbols: batch })
-                  });
-                } catch (err) {
-                  console.warn(`subscribe batch ${i + 1}/${batches.length} failed:`, err);
-                }
-                // brief pause to let backend establish subscriptions
-                await delay(150);
-              }
-            })();
-
-            // Kick off a background historical ingest to seed last prices (non-blocking)
-            // Uses current timestamp by default on the API side; safe to ignore result.
-            fetch('/api/live/ingest_hist', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ symbols: symbolsArr.slice(0, 50) })
-            }).catch(err => console.warn('ingest_hist failed (non-blocking):', err));
-
-            // Fetch via proxy to avoid CORS
-            // Prioritize top 40 for initial price fetch to surface most-mentioned quickly
-            const prioritized = ordered.slice(0, 40);
-            const chunkedFetch = async (symbols: string[], chunkSize = 30, retry = 1) => {
-              const chunks: string[][] = [];
-              for (let i = 0; i < symbols.length; i += chunkSize) {
-                chunks.push(symbols.slice(i, i + chunkSize));
-              }
+            try {
+              // Subscribe in small batches
+              const symbolsArr = ordered;
+              const subBatch = 15;
               const delay = (ms: number) => new Promise(res => setTimeout(res, ms));
-              const results: LivePrice[] = [];
-              for (let idx = 0; idx < chunks.length; idx++) {
-                const chunk = chunks[idx];
-                const qs = encodeURIComponent(chunk.join(','));
-                let attempt = 0;
-                while (true) {
-                  try {
-                    const res = await fetch(`/api/live/prices?symbols=${qs}`);
-                    if (res.ok) {
-                      const data: LivePrice[] = await res.json();
-                      results.push(...data);
-                      break;
-                    } else {
+              for (let i = 0; i < symbolsArr.length; i += subBatch) {
+                const batch = symbolsArr.slice(i, i + subBatch);
+                fetch('/api/live/subscribe', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ symbols: batch })
+                }).catch(err => console.warn('subscribe batch failed:', err));
+                await delay(120);
+              }
+
+              // Initial price pull: prioritize smaller set for faster first paint
+              const prioritized = ordered.slice(0, 30);
+              const chunkedFetch = async (symbols: string[], chunkSize = 10, retry = 1) => {
+                const chunks: string[][] = [];
+                for (let i = 0; i < symbols.length; i += chunkSize) {
+                  chunks.push(symbols.slice(i, i + chunkSize));
+                }
+                const delay = (ms: number) => new Promise(res => setTimeout(res, ms));
+                const results: LivePrice[] = [];
+                for (let idx = 0; idx < chunks.length; idx++) {
+                  const chunk = chunks[idx];
+                  const qs = encodeURIComponent(chunk.join(','));
+                  let attempt = 0;
+                  while (true) {
+                    try {
+                      const res = await fetch(`/api/live/prices?symbols=${qs}`);
+                      if (res.ok) {
+                        const data: LivePrice[] = await res.json();
+                        results.push(...data);
+                        break;
+                      } else {
+                        if (attempt < retry) {
+                          attempt++;
+                          await delay(200);
+                          continue;
+                        }
+                        console.warn(`prices chunk ${idx + 1}/${chunks.length} failed:`, res.status);
+                        break;
+                      }
+                    } catch (e) {
                       if (attempt < retry) {
                         attempt++;
-                        await delay(250);
+                        await delay(200);
                         continue;
                       }
-                      console.warn(`prices chunk ${idx + 1}/${chunks.length} failed:`, res.status);
+                      console.warn(`prices chunk ${idx + 1}/${chunks.length} error:`, e);
                       break;
                     }
-                  } catch (e) {
-                    if (attempt < retry) {
-                      attempt++;
-                      await delay(250);
-                      continue;
-                    }
-                    console.warn(`prices chunk ${idx + 1}/${chunks.length} error:`, e);
-                    break;
                   }
+                  await delay(80);
                 }
-                // small spacing between chunks
-                await delay(100);
-              }
-              return results;
-            };
+                return results;
+              };
 
-            const prices = await chunkedFetch(prioritized, 30, 1);
-            const priceMap = new Map<string, number>();
-            let priceCount = 0;
-            prices.forEach(p => {
-              if (p.price !== null) {
-                priceMap.set(p.symbol, p.price);
-                priceCount++;
+              const prices = await chunkedFetch(prioritized, 10, 1);
+              const priceMap = new Map<string, { price: number; ts: number | null }>();
+              let priceCount = 0;
+              prices.forEach(p => {
+                if (p.price !== null) {
+                  priceMap.set(p.symbol, { price: p.price as number, ts: p.ts_event_ns || null });
+                  priceCount++;
+                }
+              });
+              setLivePrices(priceMap);
+              console.log(`Received ${priceCount} live prices out of ${prices.length} tickers`);
+              if (priceCount > 0) {
+                console.log('Sample prices:', Array.from(priceMap.entries()).slice(0, 5));
               }
-            });
-            setLivePrices(priceMap);
-            console.log(`Received ${priceCount} live prices out of ${prices.length} tickers`);
-            if (priceCount > 0) {
-              console.log('Sample prices:', Array.from(priceMap.entries()).slice(0, 5));
+            } catch (error) {
+              console.error('Error fetching live prices:', error);
             }
-          } catch (error) {
-            console.error('Error fetching live prices:', error);
-          }
+          })();
         }
       }
     } catch (error) {
       console.error('Error fetching stocks:', error);
     } finally {
+      // loading is turned off earlier after stocks set; keep as safety when response not ok
       setLoading(false);
     }
   };
@@ -196,7 +301,24 @@ export default function StocksPage() {
   useEffect(() => {
     if (stocks.length === 0) return;
     const sorted = [...stocks].sort((a, b) => b.mentionCount - a.mentionCount);
-    const symbols = sorted.map(s => s.ticker.toUpperCase());
+    const baseSymbols = sorted.map(s => s.ticker.toUpperCase());
+    // Apply priority boosts (move boosted to front, de-dupe) then cap to 60
+    const boosts = priorityBoostRef.current;
+    const boostedFront: string[] = [];
+    baseSymbols.forEach(sym => {
+      if (boosts.has(sym) && boostedFront.indexOf(sym) === -1) boostedFront.push(sym);
+    });
+    const rest = baseSymbols.filter(sym => boostedFront.indexOf(sym) === -1);
+    const symbols = [...boostedFront, ...rest];
+    // decrement boosts each cycle
+    if (boosts.size > 0) {
+      const toDelete: string[] = [];
+      boosts.forEach((cnt, sym) => {
+        const next = cnt - 1;
+        if (next <= 0) toDelete.push(sym); else boosts.set(sym, next);
+      });
+      toDelete.forEach(sym => boosts.delete(sym));
+    }
     // Prioritize top 60 on each poll to surface most-mentioned first
     const prioritized = symbols.slice(0, 60);
     const query = prioritized.join(',');
@@ -249,14 +371,60 @@ export default function StocksPage() {
           }
           await delay(150);
         }
-        const priceMap = new Map<string, number>();
+        // Merge into existing map so we don't drop unpolled symbols
+        const priceMap = new Map<string, { price: number; ts: number | null }>(livePrices);
         let priceCount = 0;
+        // build maps and track null counts for backfill
+        const missingCounts = missingCountsRef.current;
+        const backfilling = backfillingRef.current;
+        const nowIso = new Date();
         aggregate.forEach(p => {
           if (p.price !== null) {
-            priceMap.set(p.symbol, p.price);
+            priceMap.set(p.symbol, { price: p.price as number, ts: p.ts_event_ns || null });
             priceCount++;
+            // reset missing count on update
+            missingCounts.delete(p.symbol);
+          } else {
+            const curr = missingCounts.get(p.symbol) || 0;
+            const next = curr + 1;
+            missingCounts.set(p.symbol, next);
+            // trigger background backfill after 3 misses, if not already
+            if (next >= 3 && !backfilling.has(p.symbol)) {
+              backfilling.add(p.symbol);
+              (async () => {
+                const offsetsMin = [0, -15, -60, -360, -1560]; // now, 15m, 60m, 6h, 26h
+                for (const off of offsetsMin) {
+                  try {
+                    const ts = new Date(Date.now() + off * 60 * 1000).toISOString();
+                    const resp = await fetch('/api/live/ingest_hist', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ symbols: [p.symbol], timestamp: ts })
+                    });
+                    if (resp.ok) {
+                      break; // seeded; next poll should pick it up
+                    }
+                  } catch (_) {}
+                }
+                backfilling.delete(p.symbol);
+              })();
+          }
           }
         });
+        // If manual refresh is active, clear spinner when ts changes
+        if (refreshing.size > 0 && refreshingInfo.size > 0) {
+          const toClear: string[] = [];
+          refreshingInfo.forEach((info, sym) => {
+            const latest = priceMap.get(sym)?.ts ?? null;
+            if (latest !== undefined && latest !== info.lastTs && refreshing.has(sym)) {
+              toClear.push(sym);
+            }
+          });
+          if (toClear.length > 0) {
+            setRefreshing(prev => { const n = new Set(prev); toClear.forEach(s => n.delete(s)); return n; });
+            setRefreshingInfo(prev => { const n = new Map(prev); toClear.forEach(s => n.delete(s)); return n; });
+          }
+        }
         setLivePrices(priceMap);
         if (priceCount > 0) {
           console.log(`[poll] ${priceCount}/${aggregate.length} live prices`, Array.from(priceMap.entries()).slice(0, 3));
@@ -672,15 +840,50 @@ export default function StocksPage() {
                     </span>
                   </div>
                   
-                  {/* Live Price */}
-                  <div className="flex items-center gap-2 mb-3">
-                    <span className="text-xs opacity-75">Last:</span>
-                    <span className="text-lg font-bold">
-                      {livePrices.has(stock.ticker) 
-                        ? `$${formatPriceTrunc2(livePrices.get(stock.ticker)! as number)}`
-                        : '-'
-                      }
-                    </span>
+                  {/* Live Price with manual refresh */}
+                  <div className="flex items-center mb-3">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs opacity-75">Last:</span>
+                      <span className="text-lg font-bold">
+                        {livePrices.has(stock.ticker.toUpperCase()) 
+                          ? `$${formatPriceTrunc2(livePrices.get(stock.ticker.toUpperCase())!.price)}`
+                          : '-'}
+                      </span>
+                      {livePrices.has(stock.ticker.toUpperCase()) && (
+                        <span className="text-xs opacity-75">
+                          {(() => {
+                            const entry = livePrices.get(stock.ticker.toUpperCase())!;
+                            if (!entry.ts) return '';
+                            const secs = Math.max(0, Math.floor((Date.now() - entry.ts / 1_000_000) / 1000));
+                            return `${secs}s ago`;
+                          })()}
+                        </span>
+                      )}
+                    </div>
+                    <button
+                      className={`ml-auto p-1 rounded hover:bg-white/10 transition ${refreshing.has(stock.ticker.toUpperCase()) ? 'opacity-60 cursor-wait' : ''}`}
+                      title={`Refresh ${stock.ticker}`}
+                      aria-label={`Refresh ${stock.ticker}`}
+                      type="button"
+                      onClick={(e) => { e.preventDefault(); e.stopPropagation(); refreshTicker(stock.ticker); }}
+                      disabled={refreshing.has(stock.ticker.toUpperCase())}
+                    >
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        className={`h-4 w-4 ${refreshing.has(stock.ticker.toUpperCase()) ? 'animate-spin' : ''}`}
+                      >
+                        <polyline points="23 4 23 10 17 10" />
+                        <polyline points="1 20 1 14 7 14" />
+                        <path d="M3.51 9a9 9 0 0 1 14.13-3.36L23 10" />
+                        <path d="M20.49 15a9 9 0 0 1-14.13 3.36L1 14" />
+                      </svg>
+                    </button>
                   </div>
                   
                   {/* First Mention Info */}

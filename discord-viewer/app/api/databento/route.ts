@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { NextRequest } from 'next/server';
 import { Client } from 'pg';
 
-const DATABENTO_API_KEY = process.env.DATABENTO_API_KEY || 'db-tLudQVLbGRAXxscuBBiu8iHgv8cmk';
+// Use only environment-provided API key; do not fallback to any hardcoded value
 
 export async function GET(request: NextRequest) {
   const client = new Client({
@@ -92,7 +92,7 @@ export async function GET(request: NextRequest) {
     
     const response = await fetch(url, {
       headers: {
-        'Authorization': 'Basic ' + Buffer.from(DATABENTO_API_KEY + ':').toString('base64')
+        'Authorization': 'Basic ' + Buffer.from(apiKey + ':').toString('base64')
       }
     });
 
@@ -143,7 +143,7 @@ export async function GET(request: NextRequest) {
       try {
         const fallbackResponse = await fetch(fallbackUrl, {
           headers: {
-            'Authorization': 'Basic ' + Buffer.from(DATABENTO_API_KEY + ':').toString('base64')
+            'Authorization': 'Basic ' + Buffer.from(apiKey + ':').toString('base64')
           }
         });
         

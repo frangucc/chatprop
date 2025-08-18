@@ -1,7 +1,11 @@
 // Simple test script to get live data from Databento
 // Using their REST API to simulate what the Rust client does
 
-const DATABENTO_API_KEY = 'db-tLudQVLbGRAXxscuBBiu8iHgv8cmk';
+const DATABENTO_API_KEY = process.env.DATABENTO_API_KEY;
+if (!DATABENTO_API_KEY) {
+  console.error('Missing DATABENTO_API_KEY in environment. Set it in your shell or .env.local before running this script.');
+  process.exit(1);
+}
 
 async function testLiveData() {
   console.log('Testing Databento Live Data...\n');

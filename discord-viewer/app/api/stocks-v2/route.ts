@@ -2,13 +2,15 @@ import { NextResponse } from 'next/server';
 import { Pool } from 'pg';
 
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
+  connectionString: process.env.DATABASE2_URL,
   ssl: { rejectUnauthorized: false }
 });
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
-  const trader = searchParams.get('trader');
+  // Support both 'traders' and legacy 'trader' query params (comma-separated list)
+  const tradersParam = searchParams.get('traders') ?? searchParams.get('trader');
+  const search = searchParams.get('search') || '';
   const minConfidence = parseFloat(searchParams.get('minConfidence') || '0.7');
   const dateRange = searchParams.get('dateRange') || 'today'; // today, week, month, all
   
@@ -56,8 +58,8 @@ export async function GET(request: Request) {
     let paramCount = 0;
 
     // Handle trader filter
-    if (traders) {
-      const traderList = traders.split(',').map(t => t.trim()).filter(Boolean);
+    if (tradersParam) {
+      const traderList = tradersParam.split(',').map(t => t.trim()).filter(Boolean);
       if (traderList.length > 0) {
         // For trader filter, check mentions by those specific traders
         query = `

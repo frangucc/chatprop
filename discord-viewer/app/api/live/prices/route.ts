@@ -35,48 +35,20 @@ export async function GET(request: Request) {
 
     const data = await res.json();
 
-    // Transform the response from map format to array format
-    // Input: { "SYMBOL": { "price": 1.23, "ts_event_ns": 123456 }, ... }
-    // Output: [ { "symbol": "SYMBOL", "price": 1.23, "ts_event_ns": 123456 }, ... ]
-    const transformed = Object.entries(data).map(([symbol, priceData]: [string, any]) => ({
-      symbol,
-      price: priceData?.price ?? null,
-      ts_event_ns: priceData?.ts_event_ns ?? null
-    }));
-
-    // Finnhub fallback for missing symbols (same-day real-time)
+    // Transform upstream map to array, and include requested-but-missing symbols with nulls
     const requested = symbols.split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
-    const presentSet = new Set(transformed.map(t => t.symbol.toUpperCase()));
-    const missing = requested.filter(s => !presentSet.has(s));
-
-    const FINNHUB_API_KEY = process.env.FINNHUB_API_KEY;
-    if (missing.length > 0 && FINNHUB_API_KEY) {
-      // Fetch quotes sequentially with short delay to avoid rate limits
-      const delay = (ms: number) => new Promise(res => setTimeout(res, ms));
-      for (let i = 0; i < missing.length; i++) {
-        const sym = missing[i];
-        try {
-          const q = await fetch(`https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(sym)}&token=${FINNHUB_API_KEY}`, {
-            cache: 'no-store',
-            headers: { 'Accept': 'application/json' }
-          });
-          if (q.ok) {
-            const jq = await q.json();
-            const price = typeof jq.c === 'number' && jq.c > 0 ? jq.c : null;
-            const tSec = typeof jq.t === 'number' ? jq.t : null;
-            transformed.push({
-              symbol: sym,
-              price,
-              ts_event_ns: tSec ? tSec * 1_000_000_000 : null
-            });
-          }
-        } catch (_) {
-          // ignore failures, keep missing as absent
-        }
-        // small pause between requests
-        await delay(80);
-      }
-    }
+    const upstreamEntries: Array<{symbol: string, price: number | null, ts_event_ns: number | null}> = Object
+      .entries(data)
+      .map(([symbol, priceData]: [string, any]) => ({
+        symbol,
+        price: priceData?.price ?? null,
+        ts_event_ns: priceData?.ts_event_ns ?? null
+      }));
+    const presentSet = new Set(upstreamEntries.map(e => e.symbol.toUpperCase()));
+    const missingEntries = requested
+      .filter(sym => !presentSet.has(sym))
+      .map(sym => ({ symbol: sym, price: null as number | null, ts_event_ns: null as number | null }));
+    const transformed = [...upstreamEntries, ...missingEntries];
 
     return NextResponse.json(transformed, {
       status: 200,
@@ -89,4 +61,3 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: isAbort ? 'Upstream timeout' : 'Proxy failure' }, { status: 504 });
   }
 }
-
