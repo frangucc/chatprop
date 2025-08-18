@@ -17,6 +17,11 @@ out/
 dist/
 build/
 
+# Rust (prevent committing build artifacts)
+target/
+**/target/
+discord-viewer/databento-live-test/target/
+
 # Runtime data
 pids
 *.pid
