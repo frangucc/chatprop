@@ -5,15 +5,15 @@ if (!DATABENTO_API_KEY) {
 }
 
 async function testDatabento() {
-  // Test for BMRA at 9:04:48 AM CST on 2025-08-14
-  // 9:04:48 AM CST = 14:04:48 UTC (during DST, CST is UTC-5)
-  const timestamp = '2025-08-14T14:04:48Z';
-  const symbol = 'BMRA';
+  // Test for SPY during yesterday's market hours (Aug 20)
+  // 10:00 AM CST = 15:00:00 UTC
+  const timestamp = '2025-08-20T15:00:00Z';
+  const symbol = 'SPY';
   
-  // 2-second window: 1 second before, 1 second after
+  // 1-minute window to catch more trades
   const startDate = new Date(timestamp);
-  startDate.setTime(startDate.getTime() - 1000);
-  const endDate = new Date(startDate.getTime() + 2000);
+  startDate.setTime(startDate.getTime() - 30000); // 30 seconds before
+  const endDate = new Date(startDate.getTime() + 60000); // 1 minute window
   
   const start = startDate.toISOString();
   const end = endDate.toISOString();
@@ -21,7 +21,7 @@ async function testDatabento() {
   console.log(`Testing BMRA at 7:35:58 AM CST (${timestamp})`);
   console.log(`Window: ${start} to ${end}`);
   
-  const url = `https://hist.databento.com/v0/timeseries.get_range?dataset=EQUS&symbols=${symbol}&stype_in=raw_symbol&start=${start}&end=${end}&schema=trades&encoding=json&limit=100`;
+  const url = `https://hist.databento.com/v0/timeseries.get_range?dataset=EQUS.MINI&symbols=${symbol}&stype_in=raw_symbol&start=${start}&end=${end}&schema=trades&encoding=json&limit=100`;
   
   try {
     const response = await fetch(url, {

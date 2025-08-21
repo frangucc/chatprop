@@ -14,7 +14,7 @@ class TickerExtractionService {
     });
     
     this.extractor = new TickerExtractorV3(process.env.DATABASE2_URL, process.env.ANTHROPIC_API_KEY);
-    this.lastProcessedId = null;
+    this.lastProcessedTs = null;
     this.isProcessing = false;
     this.checkInterval = 5000; // Check every 5 seconds
   }
@@ -25,31 +25,19 @@ class TickerExtractionService {
     // Initialize the extractor with blacklist
     await this.extractor.initialize();
     
-    // Get the last processed message ID from ticker_detections
+    // Get the last processed timestamp from ticker_detections/messages
     try {
       const result = await this.pool.query(`
-        SELECT MAX(message_id::bigint) as last_id 
-        FROM ticker_detections
+        SELECT COALESCE(MAX(m.discord_timestamp), NOW() - INTERVAL '24 hours') AS last_ts
+        FROM ticker_detections td
+        JOIN messages m ON m.id = td.message_id
       `);
-      
-      if (result.rows[0]?.last_id) {
-        this.lastProcessedId = result.rows[0].last_id;
-        console.log(`Resuming from message ID: ${this.lastProcessedId}`);
-      } else {
-        // If no detections exist, start from messages in the last 24 hours
-        const msgResult = await this.pool.query(`
-          SELECT MIN(id) as first_id 
-          FROM messages 
-          WHERE discord_timestamp >= NOW() - INTERVAL '24 hours'
-        `);
-        this.lastProcessedId = msgResult.rows[0]?.first_id ? 
-          (BigInt(msgResult.rows[0].first_id) - 1n).toString() : null;
-        console.log(`Starting from 24 hours ago, message ID: ${this.lastProcessedId || 'beginning'}`);
-      }
+      this.lastProcessedTs = result.rows[0]?.last_ts || null;
+      console.log(`Resuming from timestamp: ${this.lastProcessedTs || '24h ago'}`);
     } catch (error) {
       console.error('Error getting last processed ID:', error);
       // Start from messages in the last hour on error
-      this.lastProcessedId = null;
+      this.lastProcessedTs = null;
     }
   }
 
@@ -60,23 +48,22 @@ class TickerExtractionService {
     try {
       // Get unprocessed messages
       let query = `
-        SELECT m.id, m.content, m.author_id, a.username as author_name, 
+        SELECT m.id, m.content, m.author_id, a.username as author_name,
                m.discord_timestamp, m.channel_id
         FROM messages m
         JOIN authors a ON m.author_id = a.id
         WHERE m.content IS NOT NULL AND m.content != ''
       `;
-      
+
       const params = [];
-      if (this.lastProcessedId) {
-        query += ` AND m.id > $1`;
-        params.push(this.lastProcessedId);
+      if (this.lastProcessedTs) {
+        query += ` AND m.discord_timestamp > $1`;
+        params.push(this.lastProcessedTs);
       } else {
-        // First run - process messages from last 24 hours
         query += ` AND m.discord_timestamp >= NOW() - INTERVAL '24 hours'`;
       }
-      
-      query += ` ORDER BY m.id ASC LIMIT 50`; // Process up to 50 messages at a time
+
+      query += ` ORDER BY m.discord_timestamp ASC LIMIT 50`;
       
       const result = await this.pool.query(query, params);
       
@@ -111,13 +98,12 @@ class TickerExtractionService {
               }
             }
             
-            this.lastProcessedId = message.id;
+            this.lastProcessedTs = message.discord_timestamp;
           } catch (error) {
             console.error(`Error processing message ${message.id}:`, error.message);
           }
         }
-        
-        console.log(`Processed up to message ID: ${this.lastProcessedId}`);
+        console.log(`Processed up to timestamp: ${this.lastProcessedTs}`);
       }
     } catch (error) {
       console.error('Error processing messages:', error);

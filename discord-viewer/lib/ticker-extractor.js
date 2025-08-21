@@ -59,6 +59,9 @@ class TickerExtractor {
       low_confidence_min: 0.60,
       low_confidence_max: 0.79
     };
+
+    // Prefer legacy listed_securities if present; fallback to v2 tickers table
+    this.useListedSecurities = true;
   }
 
   // Normalize ticker variants (BRK-B -> BRK.B)
@@ -206,11 +209,26 @@ class TickerExtractor {
   // Load blacklisted tickers from database
   async loadBlacklist() {
     try {
-      const result = await this.pool.query('SELECT ticker, reason, context_note, example_messages FROM ticker_blacklist');
+      const result = await this.pool.query(`
+        SELECT 
+          ticker, 
+          reason,
+          min_confidence_required,
+          requires_cashtag,
+          requires_price_context,
+          is_permanent
+        FROM ticker_blacklist
+      `);
       this.blacklistedTickers = new Set(result.rows.map(row => row.ticker));
       this.blacklistData = new Map(result.rows.map(row => [
-        row.ticker, 
-        { reason: row.reason, contextNote: row.context_note, exampleMessages: row.example_messages }
+        row.ticker,
+        {
+          reason: row.reason,
+          minConfidence: row.min_confidence_required,
+          requiresCashtag: row.requires_cashtag,
+          requiresPriceContext: row.requires_price_context,
+          isPermanent: row.is_permanent
+        }
       ]));
       this.blacklistLoaded = true;
       console.log(`Loaded ${this.blacklistedTickers.size} blacklisted tickers`);
@@ -234,17 +252,41 @@ class TickerExtractor {
   // Validate ticker against NEON database
   async validateTicker(ticker) {
     try {
-      const result = await this.pool.query(`
-        SELECT ticker, exchange, security_type, is_active 
-        FROM listed_securities 
-        WHERE ticker = $1 
-        AND exchange IN ('NASDAQ', 'NYSE', 'AMEX')
-        AND security_type IN ('Common', 'ADR', 'ETF', 'Share Class')
-        AND is_active = true
-      `, [ticker]);
-      
-      return result.rows.length > 0 ? result.rows[0] : null;
+      if (this.useListedSecurities) {
+        const result = await this.pool.query(`
+          SELECT ticker, exchange, security_type, is_active 
+          FROM listed_securities 
+          WHERE ticker = $1 
+          AND exchange IN ('NASDAQ', 'NYSE', 'AMEX')
+          AND security_type IN ('Common', 'ADR', 'ETF', 'Share Class')
+          AND is_active = true
+        `, [ticker]);
+        return result.rows.length > 0 ? result.rows[0] : null;
+      } else {
+        // v2 schema: use tickers table as canonical list
+        const result = await this.pool.query(`
+          SELECT symbol AS ticker, exchange, is_active 
+          FROM tickers
+          WHERE symbol = $1 AND is_active = true
+        `, [ticker]);
+        return result.rows.length > 0 ? result.rows[0] : null;
+      }
     } catch (error) {
+      // If legacy table doesn't exist, fallback to v2 tickers and retry once
+      if (this.useListedSecurities && error && error.code === '42P01') {
+        this.useListedSecurities = false;
+        try {
+          const result = await this.pool.query(`
+            SELECT symbol AS ticker, exchange, is_active 
+            FROM tickers
+            WHERE symbol = $1 AND is_active = true
+          `, [ticker]);
+          return result.rows.length > 0 ? result.rows[0] : null;
+        } catch (e2) {
+          console.error(`Error validating ticker ${ticker} via v2 tickers:`, e2);
+          return null;
+        }
+      }
       console.error(`Error validating ticker ${ticker}:`, error);
       return null;
     }
@@ -259,17 +301,16 @@ class TickerExtractor {
       const isBlacklisted = this.isBlacklisted(ticker);
       const messageCount = contextMessages.length;
       
-      // Build detailed blacklist information with context notes and examples
+      // Build concise blacklist information from available fields
       const blacklistInfo = Array.from(this.blacklistData.entries())
-        .map(([ticker, data]) => {
-          let info = `${ticker}: ${data.reason}`;
-          if (data.contextNote) {
-            info += ` | Context: ${data.contextNote}`;
-          }
-          if (data.exampleMessages && data.exampleMessages.length > 0) {
-            info += ` | Examples of false positives: ${data.exampleMessages.slice(0, 3).map(msg => `"${msg}"`).join(', ')}`;
-          }
-          return info;
+        .map(([tkr, data]) => {
+          const flags = [
+            data.isPermanent ? 'permanent' : null,
+            data.requiresCashtag ? 'requires_cashtag' : null,
+            data.requiresPriceContext ? 'requires_price' : null,
+            data.minConfidence ? `min_conf ${data.minConfidence}` : null
+          ].filter(Boolean).join(', ');
+          return `${tkr}: ${data.reason}${flags ? ` | ${flags}` : ''}`;
         })
         .join('\n');
       
@@ -369,25 +410,24 @@ Respond with JSON only:
         continue;
       }
 
-      // Smart blacklist handling based on mention count and context
+      // Smart blacklist handling based on mention count and context (guarded)
       if (this.isBlacklisted(candidate.ticker)) {
+        const mentionCount = (candidate.count ?? 1);
         // For low mention count (1-2), strictly enforce blacklist
-        if (candidate.count <= 2) {
-          console.log(`Skipping blacklisted ticker with low mentions: ${candidate.ticker} (${candidate.count} mentions)`);
+        if (mentionCount <= 2) {
+          console.log(`Skipping blacklisted ticker with low mentions: ${candidate.ticker} (${mentionCount} mentions)`);
           continue;
         }
-        
         // For higher mention counts, allow re-evaluation if it looks like genuine trading context
-        const hasStrongTradingContext = candidate.contexts.some(ctx => 
-          /\$[A-Z]+|price|target|buy|sell|calls|puts|strike|expiry|volume/i.test(ctx.content)
+        const contexts = Array.isArray(candidate.contexts) ? candidate.contexts : [];
+        const hasStrongTradingContext = contexts.some(ctx =>
+          /\$[A-Z]+|price|target|buy|sell|calls|puts|strike|expiry|volume/i.test(ctx.content || '')
         );
-        
         if (!hasStrongTradingContext) {
           console.log(`Skipping blacklisted ticker without strong trading context: ${candidate.ticker}`);
           continue;
         }
-        
-        console.log(`Re-evaluating blacklisted ticker with strong context: ${candidate.ticker} (${candidate.count} mentions)`);
+        console.log(`Re-evaluating blacklisted ticker with strong context: ${candidate.ticker} (${mentionCount} mentions)`);
       }
       
       // Database validation - check if ticker exists in our allowed exchanges
@@ -434,7 +474,7 @@ Respond with JSON only:
         
         results.push(detection);
         
-        // Store in database
+        // Store in database (v2 schema)
         await this.storeTicker(detection);
       }
     }
@@ -446,11 +486,11 @@ Respond with JSON only:
   async getContextMessages(ticker, excludeMessageId) {
     try {
       const result = await this.pool.query(`
-        SELECT content, author_id, timestamp
-        FROM discord_messages 
+        SELECT content, author_id, discord_timestamp AS ts
+        FROM messages 
         WHERE content ~* $1 
-        AND id != $2
-        ORDER BY timestamp DESC 
+          AND id != $2
+        ORDER BY discord_timestamp DESC 
         LIMIT 5
       `, [`\\b${ticker}\\b`, excludeMessageId]);
       
@@ -461,33 +501,40 @@ Respond with JSON only:
     }
   }
 
-  // Store ticker detection in database
+  // Store ticker detection in database (v2 schema)
   async storeTicker(detection) {
     try {
-      await this.pool.query(`
-        INSERT INTO stocks (
-          ticker, exchange, first_mention_message_id, first_mention_text,
-          first_mention_timestamp, first_mention_author, detection_confidence,
-          detection_method, ai_confidence, is_genuine_stock, mention_count
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 1)
-        ON CONFLICT (ticker) DO UPDATE SET
-          mention_count = stocks.mention_count + 1,
-          detection_confidence = GREATEST(stocks.detection_confidence, $7),
-          ai_confidence = COALESCE($9, stocks.ai_confidence),
-          is_genuine_stock = COALESCE($10, stocks.is_genuine_stock)
-      `, [
-        detection.ticker,
-        detection.exchange,
-        detection.source_message_id,
-        detection.message_text,
-        detection.observed_at,
-        detection.author_name,
-        detection.detection_confidence,
-        detection.detection_method,
-        detection.ai_confidence,
-        detection.is_genuine_stock
-      ]);
-      
+      // Ensure ticker exists in master list (insert if missing)
+      await this.pool.query(
+        `INSERT INTO tickers (symbol, exchange, is_active)
+         VALUES ($1, $2, true)
+         ON CONFLICT (symbol) DO NOTHING`,
+        [detection.ticker, detection.exchange || 'UNKNOWN']
+      );
+
+      // Insert detection record
+      await this.pool.query(
+        `INSERT INTO ticker_detections (
+           message_id,
+           ticker_symbol,
+           detection_method,
+           confidence_score,
+           context_strength,
+           position_in_message,
+           detected_text
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+         ON CONFLICT DO NOTHING`,
+        [
+          String(detection.source_message_id),
+          detection.ticker,
+          detection.detection_method || 'unknown',
+          detection.detection_confidence ?? 0.0,
+          null,
+          null,
+          (detection.message_text || '').substring(0, 50)
+        ]
+      );
+
       return true;
     } catch (error) {
       console.error('Error storing ticker:', error);
@@ -533,10 +580,10 @@ Respond with JSON only:
   async getTodaysMessages() {
     try {
       const result = await this.pool.query(`
-        SELECT id, content, author_id, timestamp
-        FROM discord_messages 
-        WHERE timestamp >= CURRENT_DATE
-        ORDER BY timestamp ASC
+        SELECT id, content, author_id, discord_timestamp AS timestamp
+        FROM messages 
+        WHERE discord_timestamp >= date_trunc('day', NOW() AT TIME ZONE 'America/Chicago')
+        ORDER BY discord_timestamp ASC
       `);
       
       return result.rows;

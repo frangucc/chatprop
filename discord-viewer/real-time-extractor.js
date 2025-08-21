@@ -19,7 +19,7 @@ class RealTimeExtractor {
     });
     
     this.wsServer = null;
-    this.lastProcessedId = null;
+    this.lastProcessedTimestamp = null;
     this.isProcessing = false;
   }
 
@@ -29,14 +29,15 @@ class RealTimeExtractor {
     // Initialize the ticker extractor with blacklist
     await this.extractor.initialize();
     
-    // Get the last processed message ID
+    // Get the last processed message timestamp for today (Chicago time)
     try {
       const result = await this.pool.query(`
-        SELECT MAX(id) as last_id FROM messages 
-        WHERE discord_timestamp >= CURRENT_DATE AT TIME ZONE 'America/Chicago'
+        SELECT MAX(discord_timestamp) AS last_ts
+        FROM messages 
+        WHERE discord_timestamp >= date_trunc('day', NOW() AT TIME ZONE 'America/Chicago')
       `);
-      this.lastProcessedId = result.rows[0]?.last_id || null;
-      console.log(`Starting from message ID: ${this.lastProcessedId || 'beginning'}`);
+      this.lastProcessedTimestamp = result.rows[0]?.last_ts || null;
+      console.log(`Starting from timestamp: ${this.lastProcessedTimestamp || 'beginning of today'}`);
     } catch (error) {
       console.error('Error getting last processed ID:', error);
     }
@@ -49,20 +50,24 @@ class RealTimeExtractor {
     try {
       // Get new messages since last check
       let query = `
-        SELECT m.id, m.content, m.author_id, a.username as author_name, m.discord_timestamp as timestamp 
+        SELECT m.id AS message_id,
+               m.content,
+               m.author_id,
+               a.username AS author_name,
+               m.discord_timestamp AS ts
         FROM messages m
         JOIN authors a ON m.author_id = a.id
-        WHERE m.discord_timestamp >= CURRENT_DATE AT TIME ZONE 'America/Chicago'
+        WHERE m.discord_timestamp >= date_trunc('day', NOW() AT TIME ZONE 'America/Chicago')
       `;
-      
+
       const params = [];
-      if (this.lastProcessedId) {
-        query += ` AND id > $1`;
-        params.push(this.lastProcessedId);
+      if (this.lastProcessedTimestamp) {
+        query += ` AND m.discord_timestamp > $1`;
+        params.push(this.lastProcessedTimestamp);
       }
-      
-      query += ` ORDER BY timestamp ASC LIMIT 10`;
-      
+
+      query += ` ORDER BY ts ASC LIMIT 10`;
+
       const result = await this.pool.query(query, params);
       
       if (result.rows.length > 0) {
@@ -71,10 +76,10 @@ class RealTimeExtractor {
         for (const message of result.rows) {
           try {
             const detections = await this.extractor.processSingleMessage(
-              message.id,
+              message.message_id,
               message.content,
               message.author_name || message.author_id,
-              message.timestamp
+              message.ts
             );
             
             // Trigger WebSocket updates for new tickers
@@ -85,7 +90,7 @@ class RealTimeExtractor {
               console.log(`  ✅ Detected ticker: ${detection.ticker} (confidence: ${detection.detection_confidence.toFixed(2)})`);
             }
             
-            this.lastProcessedId = message.id;
+            this.lastProcessedTimestamp = message.ts;
           } catch (error) {
             console.error(`Error processing message ${message.id}:`, error);
           }

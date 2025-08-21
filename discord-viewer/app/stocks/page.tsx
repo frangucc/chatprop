@@ -138,22 +138,23 @@ export default function StocksPage() {
         await sleep(200);
         gotNew = applyAndMaybeClear(await tryFetch());
       }
-      if (!gotNew) {
-        const offsets = [0, -15, -60];
-        for (const off of offsets) {
-          try {
-            console.log(`[refresh] backfill ${key} at offset ${off} min`);
-            await fetch('/api/live/ingest_hist', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ symbols: [key], timestamp: new Date(Date.now() + off * 60 * 1000).toISOString() })
-            });
-          } catch {}
-          await sleep(250);
-          gotNew = applyAndMaybeClear(await tryFetch());
-          if (gotNew) break;
-        }
-      }
+      // Removed historical API fallback - only use live WebSocket data
+      // if (!gotNew) {
+      //   const offsets = [0, -15, -60];
+      //   for (const off of offsets) {
+      //     try {
+      //       console.log(`[refresh] backfill ${key} at offset ${off} min`);
+      //       await fetch('/api/live/ingest_hist', {
+      //         method: 'POST',
+      //         headers: { 'Content-Type': 'application/json' },
+      //         body: JSON.stringify({ symbols: [key], timestamp: new Date(Date.now() + off * 60 * 1000).toISOString() })
+      //       });
+      //     } catch {}
+      //     await sleep(250);
+      //     gotNew = applyAndMaybeClear(await tryFetch());
+      //     if (gotNew) break;
+      //   }
+      // }
       if (!gotNew) {
         await sleep(800);
         gotNew = applyAndMaybeClear(await tryFetch());
@@ -388,27 +389,27 @@ export default function StocksPage() {
             const curr = missingCounts.get(p.symbol) || 0;
             const next = curr + 1;
             missingCounts.set(p.symbol, next);
-            // trigger background backfill after 3 misses, if not already
-            if (next >= 3 && !backfilling.has(p.symbol)) {
-              backfilling.add(p.symbol);
-              (async () => {
-                const offsetsMin = [0, -15, -60, -360, -1560]; // now, 15m, 60m, 6h, 26h
-                for (const off of offsetsMin) {
-                  try {
-                    const ts = new Date(Date.now() + off * 60 * 1000).toISOString();
-                    const resp = await fetch('/api/live/ingest_hist', {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({ symbols: [p.symbol], timestamp: ts })
-                    });
-                    if (resp.ok) {
-                      break; // seeded; next poll should pick it up
-                    }
-                  } catch (_) {}
-                }
-                backfilling.delete(p.symbol);
-              })();
-          }
+            // Disabled historical backfill - only use live WebSocket data
+            // if (next >= 3 && !backfilling.has(p.symbol)) {
+            //   backfilling.add(p.symbol);
+            //   (async () => {
+            //     const offsetsMin = [0, -15, -60, -360, -1560]; // now, 15m, 60m, 6h, 26h
+            //     for (const off of offsetsMin) {
+            //       try {
+            //         const ts = new Date(Date.now() + off * 60 * 1000).toISOString();
+            //         const resp = await fetch('/api/live/ingest_hist', {
+            //           method: 'POST',
+            //           headers: { 'Content-Type': 'application/json' },
+            //           body: JSON.stringify({ symbols: [p.symbol], timestamp: ts })
+            //         });
+            //         if (resp.ok) {
+            //           break; // seeded; next poll should pick it up
+            //         }
+            //       } catch (_) {}
+            //     }
+            //     backfilling.delete(p.symbol);
+            //   })();
+            // }
           }
         });
         // If manual refresh is active, clear spinner when ts changes
@@ -677,24 +678,17 @@ export default function StocksPage() {
     <div className="min-h-screen bg-gray-50 py-8">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         {/* Header */}
-        <div className="bg-white shadow-sm rounded-lg mb-6 p-6">
-          <div className="flex justify-between items-center mb-4">
+        <div className="bg-white shadow-sm rounded-lg mb-6 p-4 sm:p-6">
+          <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4">
             <div>
-              <h1 className="text-3xl font-bold text-gray-900 mb-2">
+              <h1 className="text-2xl sm:text-3xl font-bold text-gray-900 mb-2">
                 Stock Ticker Monitor
               </h1>
-              <p className="text-gray-600">
+              <p className="text-sm sm:text-base text-gray-600">
                 Real-time ticker extraction from Discord messages
               </p>
             </div>
-            <div className="flex items-center gap-4">
-              <a
-                href="/messages"
-                className="px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors flex items-center gap-2"
-              >
-                <span>💬</span>
-                <span>View Messages</span>
-              </a>
+            <div className="flex flex-wrap items-center gap-3">
               <div className="flex items-center gap-2 text-sm">
                 <div className={`w-3 h-3 rounded-full ${connected ? 'bg-green-400' : 'bg-red-400'}`}></div>
                 <span className="text-gray-600">
@@ -702,24 +696,18 @@ export default function StocksPage() {
                 </span>
               </div>
               {mounted && lastUpdate && (
-                <div className="text-gray-500">
+                <div className="text-sm text-gray-500">
                   Last update: {format(lastUpdate, 'HH:mm:ss')}
                 </div>
               )}
             </div>
-            <Link 
-              href="/"
-              className="px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors"
-            >
-              View Messages
-            </Link>
           </div>
           
           {/* Date Range Selector */}
-          <div className="flex gap-2 mb-4">
+          <div className="flex flex-wrap gap-2 mb-4 mt-4">
             <button
               onClick={() => setDateRange('today')}
-              className={`px-4 py-2 rounded-lg transition-colors ${
+              className={`px-3 py-1.5 sm:px-4 sm:py-2 text-sm sm:text-base rounded-lg transition-colors ${
                 dateRange === 'today' 
                   ? 'bg-blue-600 text-white' 
                   : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
@@ -729,7 +717,7 @@ export default function StocksPage() {
             </button>
             <button
               onClick={() => setDateRange('week')}
-              className={`px-4 py-2 rounded-lg transition-colors ${
+              className={`px-3 py-1.5 sm:px-4 sm:py-2 text-sm sm:text-base rounded-lg transition-colors ${
                 dateRange === 'week' 
                   ? 'bg-blue-600 text-white' 
                   : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
@@ -739,7 +727,7 @@ export default function StocksPage() {
             </button>
             <button
               onClick={() => setDateRange('month')}
-              className={`px-4 py-2 rounded-lg transition-colors ${
+              className={`px-3 py-1.5 sm:px-4 sm:py-2 text-sm sm:text-base rounded-lg transition-colors ${
                 dateRange === 'month' 
                   ? 'bg-blue-600 text-white' 
                   : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
@@ -749,7 +737,7 @@ export default function StocksPage() {
             </button>
             <button
               onClick={() => setDateRange('all')}
-              className={`px-4 py-2 rounded-lg transition-colors ${
+              className={`px-3 py-1.5 sm:px-4 sm:py-2 text-sm sm:text-base rounded-lg transition-colors ${
                 dateRange === 'all' 
                   ? 'bg-blue-600 text-white' 
                   : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
@@ -828,13 +816,13 @@ export default function StocksPage() {
                   </div>
                   
                   {/* Ticker Symbol */}
-                  <div className="text-5xl font-black mb-2 tracking-tight">
+                  <div className="text-3xl sm:text-4xl md:text-5xl font-black mb-2 tracking-tight">
                     ${stock.ticker}
                   </div>
                   
                   {/* Mention Count */}
                   <div className="flex items-baseline gap-2 mb-4">
-                    <span className="text-3xl font-bold">{stock.mentionCount}</span>
+                    <span className="text-2xl sm:text-3xl font-bold">{stock.mentionCount}</span>
                     <span className="text-sm opacity-90">
                       mention{stock.mentionCount !== 1 ? 's' : ''}
                     </span>

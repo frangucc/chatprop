@@ -180,6 +180,11 @@ main() {
       catch_up_processing
       start_servers
       ;;
+    start-lite)
+      # Start only the servers, skip exports and catch-up processing
+      ensure_dirs
+      start_servers
+      ;;
     stop)
       stop_servers
       ;;
@@ -187,7 +192,7 @@ main() {
       show_status
       ;;
     *)
-      echo "Usage: $0 {start|stop|status}" >&2
+      echo "Usage: $0 {start|start-lite|stop|status}" >&2
       exit 1
       ;;
   esac
