@@ -47,6 +47,7 @@ export default function StocksPage() {
   const [selectedTraders, setSelectedTraders] = useState<any[]>([]);
   const [urlInitialized, setUrlInitialized] = useState(false);
   const [dateRange, setDateRange] = useState('today'); // Add date range state
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false); // Mobile menu state
   // Store price and last event timestamp per symbol
   const [livePrices, setLivePrices] = useState<Map<string, { price: number; ts: number | null }>>(new Map());
   // Tick every second to update 'seconds ago' counters
@@ -679,32 +680,177 @@ export default function StocksPage() {
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         {/* Header */}
         <div className="bg-white shadow-sm rounded-lg mb-6 p-4 sm:p-6">
-          <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4">
-            <div>
-              <h1 className="text-2xl sm:text-3xl font-bold text-gray-900 mb-2">
-                Stock Ticker Monitor
-              </h1>
-              <p className="text-sm sm:text-base text-gray-600">
-                Real-time ticker extraction from Discord messages
-              </p>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              {/* Mobile menu button */}
+              <button
+                onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+                className="sm:hidden p-2 rounded-md hover:bg-gray-100"
+                aria-label="Toggle menu"
+              >
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  {mobileMenuOpen ? (
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  ) : (
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+                  )}
+                </svg>
+              </button>
+              <div>
+                <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">
+                  Stock Ticker Monitor
+                </h1>
+                <p className="text-sm sm:text-base text-gray-600 hidden sm:block">
+                  Real-time ticker extraction from Discord messages
+                </p>
+              </div>
             </div>
-            <div className="flex flex-wrap items-center gap-3">
+            <div className="flex items-center gap-3">
               <div className="flex items-center gap-2 text-sm">
                 <div className={`w-3 h-3 rounded-full ${connected ? 'bg-green-400' : 'bg-red-400'}`}></div>
-                <span className="text-gray-600">
+                <span className="text-gray-600 hidden sm:inline">
                   {connected ? 'Connected' : 'Disconnected'}
                 </span>
               </div>
               {mounted && lastUpdate && (
-                <div className="text-sm text-gray-500">
+                <div className="text-sm text-gray-500 hidden sm:block">
                   Last update: {format(lastUpdate, 'HH:mm:ss')}
                 </div>
               )}
             </div>
           </div>
+        </div>
+
+        {/* Mobile Drawer Overlay */}
+        {mobileMenuOpen && (
+          <div
+            className="fixed inset-0 bg-black bg-opacity-50 z-40 sm:hidden"
+            onClick={() => setMobileMenuOpen(false)}
+          />
+        )}
+
+        {/* Mobile Drawer */}
+        <div
+          className={`fixed top-0 left-0 h-full w-80 bg-white shadow-xl z-50 transform transition-transform duration-300 sm:hidden ${
+            mobileMenuOpen ? 'translate-x-0' : '-translate-x-full'
+          }`}
+        >
+          <div className="p-4 border-b">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-semibold">Filters & Controls</h2>
+              <button
+                onClick={() => setMobileMenuOpen(false)}
+                className="p-2 rounded-md hover:bg-gray-100"
+                aria-label="Close menu"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            
+            {/* Search Input - Priority in mobile */}
+            <input
+              type="text"
+              value={filter}
+              onChange={handleFilterChange}
+              placeholder="Filter tickers..."
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent mb-4"
+            />
+          </div>
           
+          <div className="p-4 overflow-y-auto" style={{ height: 'calc(100% - 120px)' }}>
+            {/* Date Range */}
+            <div className="mb-6">
+              <h3 className="text-sm font-medium text-gray-700 mb-2">Date Range</h3>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  onClick={() => { setDateRange('today'); setMobileMenuOpen(false); }}
+                  className={`px-3 py-2 text-sm rounded-lg transition-colors ${
+                    dateRange === 'today' 
+                      ? 'bg-blue-600 text-white' 
+                      : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                  }`}
+                >
+                  Today
+                </button>
+                <button
+                  onClick={() => { setDateRange('week'); setMobileMenuOpen(false); }}
+                  className={`px-3 py-2 text-sm rounded-lg transition-colors ${
+                    dateRange === 'week' 
+                      ? 'bg-blue-600 text-white' 
+                      : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                  }`}
+                >
+                  This Week
+                </button>
+                <button
+                  onClick={() => { setDateRange('month'); setMobileMenuOpen(false); }}
+                  className={`px-3 py-2 text-sm rounded-lg transition-colors ${
+                    dateRange === 'month' 
+                      ? 'bg-blue-600 text-white' 
+                      : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                  }`}
+                >
+                  This Month
+                </button>
+                <button
+                  onClick={() => { setDateRange('all'); setMobileMenuOpen(false); }}
+                  className={`px-3 py-2 text-sm rounded-lg transition-colors ${
+                    dateRange === 'all' 
+                      ? 'bg-blue-600 text-white' 
+                      : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                  }`}
+                >
+                  All Time
+                </button>
+              </div>
+            </div>
+            
+            {/* Trader Filter */}
+            <div className="mb-6">
+              <h3 className="text-sm font-medium text-gray-700 mb-2">Trader Filter</h3>
+              <TraderFilter
+                selectedTraders={selectedTraders}
+                onTradersChange={handleTradersChange}
+              />
+            </div>
+            
+            {/* Stats */}
+            <div className="mb-6">
+              <h3 className="text-sm font-medium text-gray-700 mb-2">Statistics</h3>
+              <div className="space-y-3">
+                <div className="bg-blue-50 p-3 rounded-lg">
+                  <p className="text-sm text-blue-600 font-medium">Total Tickers</p>
+                  <p className="text-2xl font-bold text-blue-900">{stocks.length}</p>
+                </div>
+                <div className="bg-green-50 p-3 rounded-lg">
+                  <p className="text-sm text-green-600 font-medium">Most Mentioned</p>
+                  <p className="text-2xl font-bold text-green-900">
+                    {stocks[0]?.ticker || '-'}
+                  </p>
+                </div>
+                <div className="bg-purple-50 p-3 rounded-lg">
+                  <p className="text-sm text-purple-600 font-medium">Highest Count</p>
+                  <p className="text-2xl font-bold text-purple-900">
+                    {stocks[0]?.mention_count || 0}
+                  </p>
+                </div>
+                <div className="bg-orange-50 p-3 rounded-lg">
+                  <p className="text-sm text-orange-800 font-medium">Hot Tickers (10+)</p>
+                  <p className="text-2xl font-bold text-orange-900">
+                    {stocks.filter(s => s.mentionCount >= 10).length}
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        
+        {/* Desktop Controls - Hidden on Mobile */}
+        <div className="hidden sm:block bg-white shadow-sm rounded-lg mb-6 p-6">
           {/* Date Range Selector */}
-          <div className="flex flex-wrap gap-2 mb-4 mt-4">
+          <div className="flex flex-wrap gap-2 mb-4">
             <button
               onClick={() => setDateRange('today')}
               className={`px-3 py-1.5 sm:px-4 sm:py-2 text-sm sm:text-base rounded-lg transition-colors ${
