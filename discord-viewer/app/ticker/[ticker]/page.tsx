@@ -1,10 +1,10 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { useParams, useSearchParams, useRouter } from 'next/navigation';
+import { FaMoon, FaSun, FaArrowLeft } from 'react-icons/fa';
 import { format } from 'date-fns';
-import Link from 'next/link';
-import { useParams, useSearchParams } from 'next/navigation';
-import TraderFilter from '@/components/TraderFilter';
+import TraderFilter from '../../../components/TraderFilter';
 
 interface Message {
   id: string;
@@ -19,6 +19,18 @@ interface Message {
   reactions: any[];
 }
 
+interface Trader {
+  username: string;
+  nickname: string | null;
+  avatar: string | null;
+}
+
+interface LivePrice {
+  symbol: string;
+  price: number;
+  ts: number | null;
+}
+
 export default function TickerChatsPage() {
   const params = useParams();
   const searchParams = useSearchParams();
@@ -30,11 +42,85 @@ export default function TickerChatsPage() {
   const [ignoring, setIgnoring] = useState(false);
   const [showNoteInput, setShowNoteInput] = useState(false);
   const [contextNote, setContextNote] = useState('');
-  const [selectedExamples, setSelectedExamples] = useState<Set<string>>(new Set());
-  const [selectedTraders, setSelectedTraders] = useState<any[]>([]);
-  const [priceData, setPriceData] = useState<any>(null);
-  const [loadingPrice, setLoadingPrice] = useState(false);
-  const [messagePrices, setMessagePrices] = useState<{ [key: string]: any }>({});
+  const [selectedTraders, setSelectedTraders] = useState<Trader[]>([]);
+  const [currentPrice, setCurrentPrice] = useState<number | null>(null);
+  const [priceChange, setPriceChange] = useState<number | null>(null);
+  const [priceChangePercent, setPriceChangePercent] = useState<number | null>(null);
+  const [firstMentionPrice, setFirstMentionPrice] = useState<string | null>(null);
+  const [firstMentionAuthor, setFirstMentionAuthor] = useState<string | null>(null);
+  const [isDarkMode, setIsDarkMode] = useState(false);
+  const [mounted, setMounted] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [messagePrices, setMessagePrices] = useState<{[key: string]: any}>({});
+  const [dateRange, setDateRange] = useState('all');
+  const [urlInitialized, setUrlInitialized] = useState(false);
+  const [livePrices, setLivePrices] = useState<Map<string, { price: number; ts: number | null }>>(new Map());
+  const [nowTick, setNowTick] = useState<number>(Date.now());
+  const router = useRouter();
+
+  // Price formatter: truncate to 2 decimals (no rounding)
+  const formatPriceTrunc2 = (p: number) => {
+    const truncated = Math.floor(p * 100) / 100;
+    return truncated.toFixed(2);
+  };
+
+  // Tick every second to update 'seconds ago' counters
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setNowTick(Date.now());
+    }, 1000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Fetch live price for the current ticker
+  const fetchLivePrice = async () => {
+    try {
+      const response = await fetch(`/api/live/prices?symbols=${ticker.toUpperCase()}`);
+      if (response.ok) {
+        const data: LivePrice[] = await response.json();
+        const priceData = data.find(p => p.symbol.toUpperCase() === ticker.toUpperCase());
+        if (priceData) {
+          setLivePrices(prev => {
+            const newMap = new Map(prev);
+            newMap.set(ticker.toUpperCase(), {
+              price: priceData.price,
+              ts: priceData.ts
+            });
+            return newMap;
+          });
+        }
+      }
+    } catch (error) {
+      console.error('Error fetching live price:', error);
+    }
+  };
+
+  useEffect(() => {
+    setMounted(true);
+    const urlParams = new URLSearchParams(window.location.search);
+    const tradersParam = urlParams.get('traders');
+    const darkParam = urlParams.get('dark');
+    
+    if (tradersParam) {
+      const traderUsernames = tradersParam.split(',');
+      // Convert usernames to trader objects (simplified)
+      const traders = traderUsernames.map(username => ({
+        username: username.trim(),
+        nickname: null,
+        avatar: null
+      }));
+      setSelectedTraders(traders);
+    }
+    
+    if (darkParam === 'true') {
+      setIsDarkMode(true);
+    }
+    
+    const rangeParam = urlParams.get('range');
+    if (rangeParam) {
+      setDateRange(rangeParam);
+    }
+  }, []);
 
   useEffect(() => {
     // Initialize traders from URL parameters
@@ -70,31 +156,44 @@ export default function TickerChatsPage() {
         }
       }
       
-      checkIfIgnored();
+      // Mark URL initialization as complete
+      setUrlInitialized(true);
     };
     
     initializeFromUrl();
   }, [ticker, searchParams]);
 
-  // Refetch messages when traders change
+  // Refetch messages when traders or date range change, but only after URL is initialized
   useEffect(() => {
-    fetchTickerMessages();
-  }, [selectedTraders]);
+    if (urlInitialized) {
+      fetchTickerMessages();
+    }
+  }, [selectedTraders, dateRange, urlInitialized]);
 
-  // Fetch price data for all messages
+  // Fetch live price when component mounts and ticker changes
+  useEffect(() => {
+    if (ticker) {
+      fetchLivePrice();
+      // Set up interval to refresh live price every 30 seconds
+      const interval = setInterval(fetchLivePrice, 30000);
+      return () => clearInterval(interval);
+    }
+  }, [ticker]);
+
+  // Fetch historical prices for individual messages
   useEffect(() => {
     if (messages.length > 0) {
-      // Fetch price for first mention of the day (last in array since ordered DESC)
-      fetchPriceData(messages[messages.length - 1].timestamp);
+      // Clear existing prices when messages change
+      setMessagePrices({});
       
-      // Fetch prices for all messages
+      // Fetch prices for all messages using Databento API
       messages.forEach(async (message) => {
         try {
-          // Convert timestamp to ISO format for API
           const isoTimestamp = new Date(message.timestamp).toISOString();
           const response = await fetch(`/api/databento?symbol=${ticker}&timestamp=${isoTimestamp}`);
           const data = await response.json();
-          if (response.ok && data.price) {
+          
+          if (response.ok && data.price && data.price > 0) {
             setMessagePrices(prev => ({
               ...prev,
               [message.id]: {
@@ -103,32 +202,12 @@ export default function TickerChatsPage() {
               }
             }));
           }
-          // Don't log errors for expected failures (no data available)
         } catch (error) {
-          // Silently handle fetch errors - this is expected for some tickers/timestamps
+          console.error(`Error fetching price for message ${message.id}:`, error);
         }
       });
     }
   }, [messages, ticker]);
-
-  const fetchPriceData = async (timestamp: string) => {
-    setLoadingPrice(true);
-    try {
-      const isoTimestamp = new Date(timestamp).toISOString();
-      const response = await fetch(`/api/databento?symbol=${ticker}&timestamp=${isoTimestamp}`);
-      const data = await response.json();
-      if (response.ok && data.price) {
-        setPriceData({
-          ...data,
-          formattedPrice: `$${data.price.toFixed(2)}`
-        });
-      }
-    } catch (error) {
-      console.error('Error fetching price data:', error);
-    } finally {
-      setLoadingPrice(false);
-    }
-  };
 
   const fetchTickerMessages = async () => {
     setLoading(true);
@@ -136,13 +215,17 @@ export default function TickerChatsPage() {
       const tradersParam = selectedTraders.length > 0 
         ? `&traders=${selectedTraders.map(t => t.username).join(',')}` 
         : '';
+      const rangeParam = dateRange !== 'all' ? `&range=${dateRange}` : '';
       // Use the new messages API that works with the clean database
-      const response = await fetch(`/api/messages-v2?ticker=${ticker}${tradersParam}`);
+      const response = await fetch(`/api/messages-v2?ticker=${ticker}${tradersParam}${rangeParam}`);
       const data = await response.json();
       
       if (response.ok) {
         setMessages(data.messages);
         setTotal(data.total);
+        // Set first mention price and author from API response
+        setFirstMentionPrice(data.firstMentionPrice);
+        setFirstMentionAuthor(data.firstMentionAuthor);
       }
     } catch (error) {
       console.error('Error fetching ticker messages:', error);
@@ -151,144 +234,60 @@ export default function TickerChatsPage() {
     }
   };
 
-  // Update URL parameters when traders change
-  const updateUrl = (traders: any[]) => {
-    const params = new URLSearchParams(searchParams.toString());
+  // Update URL with current state
+  const updateUrl = (traders: Trader[], dark?: boolean) => {
+    const url = new URL(window.location.href);
+    
     if (traders.length > 0) {
-      params.set('traders', traders.map(t => t.username).join(','));
+      url.searchParams.set('traders', traders.map(t => t.username).join(','));
     } else {
-      params.delete('traders');
+      url.searchParams.delete('traders');
     }
     
+    const darkMode = dark !== undefined ? dark : isDarkMode;
+    if (darkMode) {
+      url.searchParams.set('dark', 'true');
+    } else {
+      url.searchParams.delete('dark');
+    }
+    
+    window.history.pushState({}, '', url.toString());
+  };
+  
+  // Handle trader filter changes
+  const handleTradersChange = (traders: Trader[]) => {
+    setSelectedTraders(traders);
+  };
+
+  const handleDateRangeChange = (range: string) => {
+    setDateRange(range);
+    
+    // Update URL with new date range
+    const params = new URLSearchParams(window.location.search);
+    if (range !== 'all') {
+      params.set('range', range);
+    } else {
+      params.delete('range');
+    }
+    if (selectedTraders.length > 0) {
+      params.set('traders', selectedTraders.map(t => t.username).join(','));
+    }
+    if (isDarkMode) {
+      params.set('dark', 'true');
+    }
     const newUrl = params.toString() ? `${window.location.pathname}?${params.toString()}` : window.location.pathname;
     window.history.pushState({}, '', newUrl);
-  };
-
-  // Handle trader filter changes
-  const handleTradersChange = (traders: any[]) => {
-    setSelectedTraders(traders);
-    updateUrl(traders);
-  };
-
-  // Refetch messages when traders change
-  useEffect(() => {
-    if (selectedTraders.length >= 0) { // Always refetch, even when empty
-      fetchTickerMessages();
-    }
-  }, [selectedTraders]);
-
-  const checkIfIgnored = async () => {
-    try {
-      const response = await fetch('/api/blacklist');
-      if (response.ok) {
-        const blacklist = await response.json();
-        const isTickerIgnored = blacklist.some((item: any) => item.ticker === ticker.toUpperCase());
-        setIsIgnored(isTickerIgnored);
-      }
-    } catch (error) {
-      console.error('Error checking blacklist:', error);
-    }
-  };
-
-  const handleIgnoreToggle = async () => {
-    if (ignoring) return;
     
-    if (!isIgnored) {
-      // Show note input when marking as false positive
-      setShowNoteInput(true);
-      return;
-    }
-    
-    // Remove from blacklist
-    setIgnoring(true);
-    try {
-      const response = await fetch(`/api/blacklist?ticker=${ticker}`, {
-        method: 'DELETE'
-      });
-      if (response.ok) {
-        setIsIgnored(false);
-        setShowNoteInput(false);
-        setContextNote('');
-      }
-    } catch (error) {
-      console.error('Error removing from blacklist:', error);
-    } finally {
-      setIgnoring(false);
-    }
+    // Refetch messages with new date range
+    fetchTickerMessages();
   };
 
-  const handleAddToBlacklist = async () => {
-    setIgnoring(true);
-    try {
-      // Get selected example messages
-      const exampleMessages = Array.from(selectedExamples).map(id => {
-        const message = messages.find(m => m.id === id);
-        return message ? message.content : null;
-      }).filter(Boolean);
-
-      const response = await fetch('/api/blacklist', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          ticker: ticker.toUpperCase(), 
-          reason: 'User marked as false positive from ticker page',
-          contextNote: contextNote.trim() || undefined,
-          exampleMessages: exampleMessages.length > 0 ? exampleMessages : undefined
-        })
-      });
-      if (response.ok) {
-        setIsIgnored(true);
-        setShowNoteInput(false);
-        setContextNote('');
-        setSelectedExamples(new Set());
-      }
-    } catch (error) {
-      console.error('Error adding to blacklist:', error);
-    } finally {
-      setIgnoring(false);
-    }
+  // Handle dark mode toggle
+  const toggleDarkMode = (dark: boolean) => {
+    setIsDarkMode(dark);
+    updateUrl(selectedTraders, dark);
   };
 
-  const handleCancelNote = () => {
-    setShowNoteInput(false);
-    setContextNote('');
-    setSelectedExamples(new Set());
-  };
-
-  const toggleExampleMessage = (messageId: string) => {
-    const message = messages.find(m => m.id === messageId);
-    if (!message) return;
-
-    setSelectedExamples(prev => {
-      const newSet = new Set(prev);
-      if (newSet.has(messageId)) {
-        newSet.delete(messageId);
-        // Remove message content from textarea (only remove first occurrence)
-        setContextNote(prevNote => {
-          const lines = prevNote.split('\n');
-          const targetContent = message.content.trim();
-          const indexToRemove = lines.findIndex(line => line.trim() === targetContent);
-          if (indexToRemove !== -1) {
-            lines.splice(indexToRemove, 1);
-          }
-          return lines.join('\n');
-        });
-      } else {
-        newSet.add(messageId);
-        // Add message content to textarea only if it's not already there
-        setContextNote(prevNote => {
-          const lines = prevNote.split('\n').map(line => line.trim());
-          const targetContent = message.content.trim();
-          if (!lines.includes(targetContent)) {
-            const newContent = prevNote.trim() ? `${prevNote}\n${message.content}` : message.content;
-            return newContent;
-          }
-          return prevNote;
-        });
-      }
-      return newSet;
-    });
-  };
 
   // Highlight the ticker in message content
   const highlightTicker = (content: string) => {
@@ -308,229 +307,186 @@ export default function TickerChatsPage() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50 py-8">
+    <div className={`min-h-screen py-8 ${isDarkMode ? 'bg-[#181717]' : 'bg-gray-50'}`}>
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         {/* Header */}
-        <div className="bg-white shadow-sm rounded-lg mb-6 p-6">
-          {/* Top Row: Title and Actions */}
-          <div className="flex justify-between items-start mb-4">
-            <div>
-              <div className="flex items-center gap-3 mb-2">
-                <h1 className="text-4xl font-black text-gray-900">
-                  ${ticker}
-                </h1>
-                <span className="bg-blue-100 text-blue-800 text-sm font-medium px-3 py-1 rounded-full">
-                  {total} mentions
-                </span>
+        <div className={`shadow-sm rounded-lg mb-6 p-6 ${isDarkMode ? 'bg-gray-800' : 'bg-white'}`}>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              <button
+                onClick={() => {
+                  // Navigate directly to /stocks with preserved filters
+                  const params = new URLSearchParams();
+                  if (selectedTraders.length > 0) {
+                    params.set('traders', selectedTraders.map(t => t.username).join(','));
+                  }
+                  if (dateRange !== 'all') {
+                    params.set('range', dateRange);
+                  }
+                  if (isDarkMode) {
+                    params.set('dark', 'true');
+                  }
+                  const stocksUrl = params.toString() ? `/stocks?${params.toString()}` : '/stocks';
+                  router.push(stocksUrl);
+                }}
+                className={`p-2 rounded-lg transition-colors ${isDarkMode ? 'hover:bg-gray-700 text-white' : 'hover:bg-gray-100 text-gray-600'}`}
+                aria-label="Back to stocks"
+              >
+                <FaArrowLeft className="w-5 h-5" />
+              </button>
+              <div>
+                <h1 className={`text-4xl font-black ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>${ticker}</h1>
+                <p className={`${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>All messages mentioning this ticker</p>
               </div>
-              <p className="text-gray-600">All messages mentioning this ticker</p>
-              
-              {/* Price Display */}
-              {!loadingPrice && priceData && priceData.price && (
-                <div className="mt-4">
-                  <div className="text-5xl font-black text-green-600">
-                    {priceData.formattedPrice}
+            </div>
+            
+            {/* Price Display Section */}
+            <div className="flex items-start gap-8">
+              {/* Last Price Display */}
+              <div className="text-right">
+                <p className={`text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>Last price</p>
+                <div className="flex items-center gap-2">
+                  <div className={`text-3xl font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
+                    {livePrices.has(ticker.toUpperCase()) 
+                      ? `$${formatPriceTrunc2(livePrices.get(ticker.toUpperCase())!.price)}`
+                      : '-'}
                   </div>
-                  <p className="text-sm text-gray-500 mt-1">
-                    Price at first mention
-                  </p>
+                  {livePrices.has(ticker.toUpperCase()) && (
+                    <div className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                      {(() => {
+                        const entry = livePrices.get(ticker.toUpperCase())!;
+                        if (!entry.ts) return '';
+                        const secs = Math.max(0, Math.floor((Date.now() - entry.ts / 1_000_000) / 1000));
+                        return `${secs}s ago`;
+                      })()} 
+                    </div>
+                  )}
+                </div>
+              </div>
+              
+              {/* First Mention Price Display */}
+              {firstMentionPrice && (
+                <div className="text-right">
+                  <p className={`text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>First mention price</p>
+                  <div className="flex items-center gap-4">
+                    <div className={`text-3xl font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
+                      {firstMentionPrice}
+                    </div>
+                    {firstMentionAuthor && (
+                      <div className={`text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                        by @{firstMentionAuthor}
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
             </div>
-            
-            <div className="flex gap-2">
-              <Link
-                href="/stocks"
-                className="px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors"
-              >
-                ← Back to Stocks
-              </Link>
-              <Link
-                href="/"
-                className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors"
-              >
-                All Messages
-              </Link>
-            </div>
-          </div>
-
-          {/* Blacklist Controls */}
-          <div className="border-t pt-4">
-            <div className="flex items-center gap-4">
-              <label className="flex items-center gap-3 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={isIgnored}
-                  onChange={handleIgnoreToggle}
-                  disabled={ignoring}
-                  className="w-5 h-5 text-red-600 bg-gray-100 border-gray-300 rounded focus:ring-red-500 focus:ring-2"
-                />
-                <span className="text-lg font-medium text-gray-700">
-                  {isIgnored ? '✓ Ignored (False Positive)' : 'Mark as False Positive'}
-                </span>
-                {ignoring && (
-                  <div className="inline-block animate-spin rounded-full h-4 w-4 border-b-2 border-gray-600"></div>
-                )}
-              </label>
-            </div>
-
-            {/* Context Note Input */}
-            {showNoteInput && (
-              <div className="mt-4 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
-                <h4 className="font-semibold text-gray-900 mb-2">Add Context Note</h4>
-                <p className="text-sm text-gray-600 mb-3">
-                  Help the AI understand when this is a false positive vs. a real stock mention.
-                </p>
-                <textarea
-                  value={contextNote}
-                  onChange={(e) => setContextNote(e.target.value)}
-                  placeholder={`Example for ALL: "ALL is being used as the normal word, not a ticker here. There is a ticker in the NYSE called $ALL however, but none of these contexts are using the word as a ticker."`}
-                  className="w-full p-3 border border-gray-300 rounded-lg resize-none focus:ring-2 focus:ring-red-500 focus:border-red-500"
-                  rows={3}
-                />
-                
-                {selectedExamples.size > 0 && (
-                  <p className="text-sm text-red-600 mt-3">
-                    {selectedExamples.size} example message(s) selected - they will be appended to your note
-                  </p>
-                )}
-
-                <div className="flex gap-2 mt-4">
-                  <button
-                    onClick={handleAddToBlacklist}
-                    disabled={ignoring}
-                    className="px-4 py-2 bg-red-600 hover:bg-red-700 disabled:bg-gray-400 text-white rounded-lg transition-colors"
-                  >
-                    {ignoring ? 'Adding...' : 'Add to Blacklist'}
-                  </button>
-                  <button
-                    onClick={handleCancelNote}
-                    className="px-4 py-2 bg-gray-500 hover:bg-gray-600 text-white rounded-lg transition-colors"
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </div>
-            )}
           </div>
         </div>
 
-        {/* Trader Filter */}
-        <div className="bg-white shadow-sm rounded-lg mb-6 p-6">
-          <h3 className="text-lg font-semibold text-gray-900 mb-4">Filter Messages by Trader</h3>
+        {/* Date Range and Trader Filter */}
+        <div className={`shadow-sm rounded-lg mb-6 p-6 ${isDarkMode ? 'bg-gray-800' : 'bg-white'}`}>
+          {/* Date Range Buttons */}
+          <div className="mb-6">
+            <div className="flex flex-wrap gap-2">
+              {['today', 'week', 'month', 'all'].map((range) => (
+                <button
+                  key={range}
+                  onClick={() => handleDateRangeChange(range)}
+                  className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                    dateRange === range
+                      ? isDarkMode
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-blue-600 text-white'
+                      : isDarkMode
+                        ? 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                        : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                  }`}
+                >
+                  {range === 'today' ? 'Today' : range === 'week' ? 'This Week' : range === 'month' ? 'This Month' : 'All Time'}
+                </button>
+              ))}
+            </div>
+          </div>
+          
           <TraderFilter
             selectedTraders={selectedTraders}
             onTradersChange={handleTradersChange}
-            placeholder="@username - Filter messages by specific traders..."
+            placeholder={`Filter messages by trader for ${ticker}...`}
+            isDarkMode={isDarkMode}
           />
-          {selectedTraders.length > 0 && (
-            <p className="text-sm text-gray-600 mt-2">
-              Showing messages from {selectedTraders.length} selected trader{selectedTraders.length !== 1 ? 's' : ''} only
-            </p>
-          )}
         </div>
+
 
         {/* Messages */}
         <div className="space-y-4">
           {loading ? (
-            <div className="bg-white rounded-lg p-8 text-center">
-              <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-gray-900"></div>
-              <p className="mt-2 text-gray-600">Loading messages...</p>
+            <div className="flex justify-center items-center h-64">
+              <div className={`animate-spin rounded-full h-12 w-12 border-b-2 ${isDarkMode ? 'border-white' : 'border-gray-900'}`}></div>
             </div>
-          ) : messages.length > 0 ? (
+          ) : messages.length === 0 ? (
+            <div className="text-center py-12">
+              <div className="text-6xl mb-4">💬</div>
+              <p className={`text-lg ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                No messages found for ${ticker}
+                {selectedTraders.length > 0 && ` from selected traders`}
+              </p>
+            </div>
+          ) : (
             messages.map((message) => (
-              <div
-                key={message.id}
-                className="bg-white rounded-lg shadow-sm hover:shadow-md transition-shadow p-6"
-              >
-                <div className="flex gap-4">
-                  {/* Avatar */}
-                  <div className="flex-shrink-0">
+              <div key={message.id} className={`rounded-lg shadow-sm hover:shadow-md transition-shadow p-6 ${isDarkMode ? 'bg-gray-800' : 'bg-white'}`}>
+                <div className="flex items-start justify-between mb-3">
+                  <div className="flex items-center gap-3">
                     <img
-                      className="h-12 w-12 rounded-full"
-                      src={message.author_avatar_url || '/api/placeholder/48/48'}
+                      src={message.author_avatar_url || '/api/placeholder/40/40'}
                       alt={message.author_name}
+                      className="w-10 h-10 rounded-full"
                     />
-                  </div>
-                  
-                  {/* Content */}
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2 mb-2">
-                      <span className="font-semibold text-gray-900">
+                    <div>
+                      <div className={`font-semibold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
                         {message.author_nickname || message.author_name}
-                      </span>
-                      <span className="text-xs text-gray-400">•</span>
-                      <div className="text-xs text-gray-500">
-                        {(() => {
-                          const date = new Date(message.timestamp);
-                          // The timestamp is stored as UTC but represents CST time
-                          // No conversion needed, just display it
-                          return `${date.toLocaleDateString()} ${date.toLocaleTimeString('en-US', { 
-                            hour: '2-digit', 
-                            minute: '2-digit',
-                            second: '2-digit',
-                            hour12: true 
-                          })} CST`;
-                        })()}
                       </div>
-                    </div>
-                    
-                    {/* Message Content */}
-                    <div className="text-gray-700 whitespace-pre-wrap">
-                      {message.content}
-                    </div>
-                    
-                    {/* Attachments & Embeds */}
-                    <div className="mt-2 flex gap-2">
-                      {message.attachments && message.attachments.length > 0 && (
-                        <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
-                          📎 {message.attachments.length} file(s)
-                        </span>
-                      )}
-                      {message.embeds && message.embeds.length > 0 && (
-                        <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-purple-100 text-purple-800">
-                          🔗 {message.embeds.length} embed(s)
-                        </span>
-                      )}
+                      <div className={`text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                        @{message.author_name} • {format(new Date(message.timestamp), 'MMM d, yyyy h:mm a')}
+                      </div>
                     </div>
                   </div>
-                  
-                  {/* Right side: Price and Example Checkbox */}
-                  <div className="flex-shrink-0 text-right flex flex-col items-end gap-2">
-                    {/* Price */}
-                    {messagePrices[message.id] && (
-                      <div className="text-2xl font-bold text-green-600">
-                        {messagePrices[message.id].formattedPrice}
-                      </div>
-                    )}
-                    
-                    {/* Example Message Checkbox - only show when in blacklist mode */}
-                    {showNoteInput && (
-                      <div className="flex items-center gap-2">
-                        <label className="text-xs text-gray-600">Example</label>
-                        <input
-                          type="checkbox"
-                          checked={selectedExamples.has(message.id)}
-                          onChange={(e) => {
-                            e.stopPropagation();
-                            toggleExampleMessage(message.id);
-                          }}
-                          onClick={(e) => e.stopPropagation()}
-                          className="w-4 h-4 text-red-600 bg-gray-100 border-gray-300 rounded focus:ring-red-500 focus:ring-2"
-                          title="Include this message as an example of false positive usage"
-                        />
-                      </div>
-                    )}
-                  </div>
+                  {messagePrices[message.id] && (
+                    <div className={`text-sm font-medium ${isDarkMode ? 'text-green-400' : 'text-green-600'}`}>
+                      {messagePrices[message.id].formattedPrice}
+                    </div>
+                  )}
+                  {/* Debug: Show if we have any prices at all */}
+                  {Object.keys(messagePrices).length === 0 && messages.length > 0 && (
+                    <div className="text-xs text-red-500">
+                      No prices loaded ({Object.keys(messagePrices).length}/{messages.length})
+                    </div>
+                  )}
+                </div>
+                <div className={`whitespace-pre-wrap leading-relaxed ${isDarkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+                  {message.content}
                 </div>
               </div>
             ))
-          ) : (
-            <div className="bg-white rounded-lg p-8 text-center">
-              <p className="text-gray-500">No messages found for ${ticker}</p>
-            </div>
           )}
         </div>
+        
+        {/* Load More Button */}
+        {!loading && messages.length > 0 && messages.length % 50 === 0 && (
+          <div className="text-center mt-8">
+            <button
+              onClick={() => console.log('Load more implementation needed')}
+              disabled={loadingMore}
+              className={`px-6 py-2 rounded-lg transition-colors disabled:opacity-50 ${
+                isDarkMode 
+                  ? 'bg-blue-600 text-white hover:bg-blue-700' 
+                  : 'bg-blue-600 text-white hover:bg-blue-700'
+              }`}
+            >
+              {loadingMore ? 'Loading...' : 'Load More Messages'}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

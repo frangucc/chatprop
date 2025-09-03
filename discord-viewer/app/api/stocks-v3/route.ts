@@ -6,6 +6,8 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false }
 });
 
+// Note: Price extraction removed - prices should come from Databento API instead
+
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const tradersParam = searchParams.get('traders');
@@ -65,7 +67,20 @@ export async function GET(request: Request) {
             END
           ) FILTER (WHERE td.confidence_score >= 0.8) as sample_mentions,
           -- Check if mentioned by known traders
-          BOOL_OR(a.is_trader) as mentioned_by_trader
+          BOOL_OR(a.is_trader) as mentioned_by_trader,
+          -- Get first mention details for price extraction
+          (
+            SELECT ROW(m2.content, a2.username)
+            FROM ticker_detections td2
+            JOIN messages m2 ON td2.message_id = m2.id
+            JOIN authors a2 ON m2.author_id = a2.id
+            WHERE td2.ticker_symbol = t.symbol
+              AND td2.confidence_score >= $1
+              ${dateFilter.replace('m.discord_timestamp', 'm2.discord_timestamp')}
+              ${traderFilter.replace('a.username', 'a2.username')}
+            ORDER BY m2.discord_timestamp ASC
+            LIMIT 1
+          ) as first_mention_details
         FROM tickers t
         JOIN ticker_detections td ON t.symbol = td.ticker_symbol
         JOIN messages m ON td.message_id = m.id
@@ -105,21 +120,46 @@ export async function GET(request: Request) {
     const result = await pool.query(query, params);
     
     // Format the response
-    const stocks = result.rows.map(row => ({
-      ticker: row.symbol,
-      exchange: row.exchange || 'UNKNOWN',
-      mentionCount: parseInt(row.mention_count),
-      uniqueAuthors: parseInt(row.unique_authors),
-      avgConfidence: parseFloat(row.avg_confidence),
-      firstMention: row.first_mention,
-      lastMention: row.last_mention,
-      sampleMentions: row.sample_mentions?.filter(Boolean).slice(0, 3),
-      mentionedByTrader: row.mentioned_by_trader,
-      isBlacklisted: row.is_blacklisted,
-      blacklistReason: row.blacklist_reason,
-      // Calculate momentum (mentions in last hour vs previous)
-      momentum: calculateMomentum(row)
-    }));
+    const stocks = result.rows.map(row => {
+      // Extract first mention author only (prices come from Databento API)
+      let firstMentionPrice = null; // Always null - prices handled by Databento API
+      let firstMentionAuthor = null;
+      
+      if (row.first_mention_details) {
+        // Parse the ROW(content, username) format from PostgreSQL
+        const detailsStr = row.first_mention_details;
+        
+        // More robust parsing for PostgreSQL ROW format
+        const match = detailsStr.match(/^\("([^"]*(?:""[^"]*)*)","([^"]*(?:""[^"]*)*)"\)$/);
+        if (match) {
+          firstMentionAuthor = match[2].replace(/""/g, '"'); // Unescape double quotes
+        } else {
+          // Fallback for simpler format
+          const simpleMatch = detailsStr.match(/^\(([^,]+),([^)]+)\)$/);
+          if (simpleMatch) {
+            firstMentionAuthor = simpleMatch[2].replace(/^"(.*)"$/, '$1');
+          }
+        }
+      }
+      
+      return {
+        ticker: row.symbol,
+        exchange: row.exchange || 'UNKNOWN',
+        mentionCount: parseInt(row.mention_count),
+        uniqueAuthors: parseInt(row.unique_authors),
+        avgConfidence: parseFloat(row.avg_confidence),
+        firstMention: row.first_mention,
+        lastMention: row.last_mention,
+        sampleMentions: row.sample_mentions?.filter(Boolean).slice(0, 3),
+        mentionedByTrader: row.mentioned_by_trader,
+        isBlacklisted: row.is_blacklisted,
+        blacklistReason: row.blacklist_reason,
+        firstMentionPrice: firstMentionPrice,
+        firstMentionAuthor: firstMentionAuthor,
+        // Calculate momentum (mentions in last hour vs previous)
+        momentum: calculateMomentum(row)
+      };
+    });
     
     return NextResponse.json({
       stocks,

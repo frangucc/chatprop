@@ -21,6 +21,15 @@ export async function GET(request: NextRequest) {
       );
     }
 
+    const apiKey = process.env.DATABENTO_API_KEY;
+    if (!apiKey) {
+      console.error('DATABENTO_API_KEY not found in environment');
+      return NextResponse.json(
+        { error: 'Databento API key not configured' },
+        { status: 500 }
+      );
+    }
+
     await client.connect();
     
     // Check if we already have this price in the database
@@ -37,14 +46,6 @@ export async function GET(request: NextRequest) {
         symbol: cached.symbol,
         cached: true
       });
-    }
-
-    const apiKey = process.env.DATABENTO_API_KEY;
-    if (!apiKey) {
-      return NextResponse.json(
-        { error: 'Databento API key not configured' },
-        { status: 500 }
-      );
     }
 
     let startDate = new Date(timestamp);
@@ -155,29 +156,26 @@ export async function GET(request: NextRequest) {
             const lastTrade = JSON.parse(fallbackLines[fallbackLines.length - 1]);
             if (lastTrade.price) {
               const price = lastTrade.price / 1000000000;
-              // No trades found - track failure
+              
+              // Store the fallback price in the database
               await client.query(
-                `INSERT INTO ticker_lookup_failures (ticker_symbol, failure_count, last_failure_date)
-                 VALUES ($1, 1, CURRENT_TIMESTAMP)
-                 ON CONFLICT (ticker_symbol) DO UPDATE 
-                 SET failure_count = ticker_lookup_failures.failure_count + 1,
-                     last_failure_date = CURRENT_TIMESTAMP`,
-                [symbol.toUpperCase()]
+                `INSERT INTO stock_price_cache 
+                 (symbol, timestamp, price, price_min, price_max, trade_count, is_market_hours) 
+                 VALUES ($1, $2, $3, $4, $5, $6, $7)
+                 ON CONFLICT (symbol, timestamp) DO NOTHING`,
+                [symbol.toUpperCase(), timestamp, price, price, price, 1, isMarketHours]
               );
               
-              if (isMarketHours) {
-                return NextResponse.json({
-                  error: 'No trades found in the specified time window',
-                  timestamp,
-                  symbol
-                }, { status: 404 });
-              } else {
-                return NextResponse.json({
-                  error: 'No closing price found for this day',
-                  timestamp,
-                  symbol
-                }, { status: 404 });
-              }
+              return NextResponse.json({
+                price: price,
+                timestamp,
+                symbol,
+                tradeCount: 1,
+                totalVolume: lastTrade.size || 0,
+                cached: false,
+                fallback: true,
+                message: `Using last available price before ${timestamp}`
+              });
             }
           }
         }
@@ -185,25 +183,11 @@ export async function GET(request: NextRequest) {
         console.error('Fallback price fetch failed:', e);
       }
       
-      // Store the price in the database
-      await client.query(
-        `INSERT INTO stock_price_cache 
-         (symbol, timestamp, price, min_price, max_price, trade_count, total_volume, is_market_hours) 
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-         ON CONFLICT (symbol, timestamp) DO NOTHING`,
-        [symbol.toUpperCase(), timestamp, 0, 0, 0, 0, 0, isMarketHours]
+      // No price data available - return error instead of storing 0
+      return NextResponse.json(
+        { error: 'No price data available for this timestamp' },
+        { status: 404 }
       );
-      
-      return NextResponse.json({
-        price: 0,
-        timestamp,
-        symbol,
-        tradeCount: 0,
-        totalVolume: 0,
-        message: isMarketHours 
-          ? 'No trades found in 2-second window'
-          : 'Market closed - no price available'
-      });
     }
 
     const avgPrice = totalVolume > 0 ? totalPrice / totalVolume : 0;

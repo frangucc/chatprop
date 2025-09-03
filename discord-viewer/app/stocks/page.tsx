@@ -5,6 +5,11 @@ import { format } from 'date-fns';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import TraderFilter from '@/components/TraderFilter';
+import { FaExpand, FaCompress, FaTimes } from 'react-icons/fa';
+import { BiCollapse } from 'react-icons/bi';
+import { FaSun, FaMoon } from 'react-icons/fa';
+import { FaMagnifyingGlass } from 'react-icons/fa6';
+import Image from 'next/image';
 
 interface Stock {
   ticker: string;
@@ -19,6 +24,8 @@ interface Stock {
   isBlacklisted: boolean;
   blacklistReason: string | null;
   momentum: string;
+  firstMentionPrice: number | null;
+  firstMentionAuthor: string | null;
   // Legacy fields for compatibility
   mention_count?: number;
   detection_confidence?: number;
@@ -48,6 +55,13 @@ export default function StocksPage() {
   const [urlInitialized, setUrlInitialized] = useState(false);
   const [dateRange, setDateRange] = useState('today'); // Add date range state
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false); // Mobile menu state
+  const [isCollapsed, setIsCollapsed] = useState(false);
+  const [isDarkMode, setIsDarkMode] = useState(false); // Collapse state for desktop focus mode
+  const [searchFocused, setSearchFocused] = useState(false); // Search focus state
+  const [comboSearch, setComboSearch] = useState(''); // Combined ticker/trader search
+  const [searchResults, setSearchResults] = useState<{tickers: any[], traders: any[]}>({tickers: [], traders: []});
+  const [showSearchResults, setShowSearchResults] = useState(false);
+  const [selectedSearchItems, setSelectedSearchItems] = useState<{type: 'ticker' | 'trader', value: string, data?: any}[]>([]);
   // Store price and last event timestamp per symbol
   const [livePrices, setLivePrices] = useState<Map<string, { price: number; ts: number | null }>>(new Map());
   // Tick every second to update 'seconds ago' counters
@@ -443,13 +457,30 @@ export default function StocksPage() {
   }, [stocks]);
 
   // Update URL parameters
-  const updateUrl = (traders: any[], filterText: string) => {
+  const updateUrl = (traders: any[], filterText: string, collapsed?: boolean, darkMode?: boolean, dateRange?: string) => {
     const params = new URLSearchParams();
     if (traders.length > 0) {
       params.set('traders', traders.map(t => t.username).join(','));
     }
     if (filterText) {
       params.set('filter', filterText);
+    }
+    if (collapsed !== undefined) {
+      if (collapsed) {
+        params.set('expand', 'true');
+      } else {
+        params.delete('expand');
+      }
+    }
+    if (darkMode !== undefined) {
+      if (darkMode) {
+        params.set('dark', 'true');
+      } else {
+        params.delete('dark');
+      }
+    }
+    if (dateRange !== undefined) {
+      params.set('range', dateRange);
     }
     
     const newUrl = params.toString() ? `${window.location.pathname}?${params.toString()}` : window.location.pathname;
@@ -459,31 +490,155 @@ export default function StocksPage() {
   // Handle trader filter changes
   const handleTradersChange = (traders: any[]) => {
     setSelectedTraders(traders);
-    updateUrl(traders, filter);
+    updateUrl(traders, filter, undefined, undefined, dateRange);
   };
 
   // Handle filter input change
   const handleFilterChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const value = e.target.value;
     setFilter(value);
-    updateUrl(selectedTraders, value);
+    updateUrl(selectedTraders, value, undefined, undefined, dateRange);
+  };
+
+  // Handle expand/collapse toggle
+  const toggleExpand = (collapsed: boolean) => {
+    setIsCollapsed(collapsed);
+    localStorage.setItem('hasjuice-isCollapsed', collapsed.toString());
+    updateUrl(selectedTraders, filter, collapsed, undefined, dateRange);
+  };
+
+  // Handle dark mode toggle
+  const toggleDarkMode = (dark: boolean) => {
+    setIsDarkMode(dark);
+    localStorage.setItem('hasjuice-darkMode', dark.toString());
+    updateUrl(selectedTraders, filter, undefined, dark, dateRange);
+  };
+
+  // Handle date range change
+  const handleDateRangeChange = (range: string) => {
+    setDateRange(range);
+    localStorage.setItem('hasjuice-dateRange', range);
+    updateUrl(selectedTraders, filter, undefined, undefined, range);
+    fetchStocks(); // Refetch data with new date range
+  };
+
+  // Search for tickers and traders
+  const searchCombo = async (query: string) => {
+    if (!query.trim()) {
+      setSearchResults({tickers: [], traders: []});
+      setShowSearchResults(false);
+      return;
+    }
+
+    try {
+      // Search tickers from current stocks
+      const tickerMatches = stocks.filter(stock => 
+        stock.ticker.toLowerCase().includes(query.toLowerCase())
+      ).slice(0, 5);
+
+      // Search traders via API
+      const traderResponse = await fetch(`/api/users/search?q=${encodeURIComponent(query)}`);
+      const traderData = await traderResponse.json();
+      const traderMatches = traderData.users?.slice(0, 5) || [];
+
+      setSearchResults({
+        tickers: tickerMatches,
+        traders: traderMatches
+      });
+      setShowSearchResults(true);
+    } catch (error) {
+      console.error('Search error:', error);
+      setSearchResults({tickers: [], traders: []});
+    }
+  };
+
+  // Handle combo search input change
+  const handleComboSearchChange = (value: string) => {
+    setComboSearch(value);
+    if (value.trim()) {
+      searchCombo(value);
+    } else {
+      setShowSearchResults(false);
+    }
+  };
+
+  // Add search item as chip
+  const addSearchItem = (type: 'ticker' | 'trader', value: string, data?: any) => {
+    const exists = selectedSearchItems.some(item => item.type === type && item.value === value);
+    if (!exists) {
+      setSelectedSearchItems(prev => [...prev, {type, value, data}]);
+    }
+    setComboSearch('');
+    setShowSearchResults(false);
+    
+    // Apply the filter
+    if (type === 'trader' && data) {
+      const traderExists = selectedTraders.some(t => t.username === data.username);
+      if (!traderExists) {
+        setSelectedTraders(prev => [...prev, data]);
+      }
+    }
+  };
+
+  // Remove search item chip
+  const removeSearchItem = (index: number) => {
+    const item = selectedSearchItems[index];
+    setSelectedSearchItems(prev => prev.filter((_, i) => i !== index));
+    
+    // Remove from traders if it's a trader
+    if (item.type === 'trader' && item.data) {
+      setSelectedTraders(prev => prev.filter(t => t.username !== item.data.username));
+    }
   };
 
   useEffect(() => {
     setMounted(true);
     setLastUpdate(new Date());
     
-    // Fetch initial data from the new API with date range
-    fetchStocks();
+    // Initialize from localStorage first, then URL parameters
+    const savedDarkMode = localStorage.getItem('hasjuice-darkMode');
+    const savedDateRange = localStorage.getItem('hasjuice-dateRange');
+    const savedIsCollapsed = localStorage.getItem('hasjuice-isCollapsed');
+    
+    // Set initial values from localStorage
+    if (savedDarkMode !== null) {
+      setIsDarkMode(savedDarkMode === 'true');
+    }
+    if (savedDateRange && ['today', 'week', 'month', 'all'].includes(savedDateRange)) {
+      setDateRange(savedDateRange);
+    }
+    if (savedIsCollapsed !== null) {
+      setIsCollapsed(savedIsCollapsed === 'true');
+    }
 
-    // Initialize from URL parameters
+    // Initialize from URL parameters (overrides localStorage)
     const urlParams = new URLSearchParams(window.location.search);
-    const url = new URL('/api/stocks-v2', window.location.origin);
     const tradersParam = urlParams.get('traders');
     const filterParam = urlParams.get('filter');
+    const expandParam = urlParams.get('expand');
+    const darkParam = urlParams.get('dark');
+    const rangeParam = urlParams.get('range');
     
     if (filterParam) {
       setFilter(filterParam);
+    }
+    
+    if (expandParam === 'true') {
+      setIsCollapsed(true);
+      localStorage.setItem('hasjuice-isCollapsed', 'true');
+    }
+    
+    if (darkParam === 'true') {
+      setIsDarkMode(true);
+      localStorage.setItem('hasjuice-darkMode', 'true');
+    } else if (darkParam === 'false') {
+      setIsDarkMode(false);
+      localStorage.setItem('hasjuice-darkMode', 'false');
+    }
+    
+    if (rangeParam && ['today', 'week', 'month', 'all'].includes(rangeParam)) {
+      setDateRange(rangeParam);
+      localStorage.setItem('hasjuice-dateRange', rangeParam);
     }
     
     if (tradersParam) {
@@ -601,23 +756,26 @@ export default function StocksPage() {
     }
   }, [selectedTraders, dateRange, mounted, urlInitialized]);
 
-  const filteredStocks = stocks.filter(stock => 
-    stock.ticker.toLowerCase().includes(filter.toLowerCase())
-  );
+  // Combined filtering for both ticker filter and combo search
+  const filteredStocks = stocks.filter(stock => {
+    const tickerMatch = stock.ticker.toLowerCase().includes(filter.toLowerCase());
+    const comboTickerMatch = comboSearch ? stock.ticker.toLowerCase().includes(comboSearch.toLowerCase()) : true;
+    return tickerMatch && comboTickerMatch;
+  });
 
   // Color gradient based on mention count
   const getCardColor = (mention_count: number) => {
     if (mention_count >= 20) return 'bg-gradient-to-br from-red-500 to-pink-600';
     if (mention_count >= 10) return 'bg-gradient-to-br from-orange-500 to-red-500';
     if (mention_count >= 5) return 'bg-gradient-to-br from-yellow-500 to-orange-500';
-    return 'bg-gradient-to-br from-blue-500 to-indigo-600';
+    return 'bg-gradient-to-br from-[#08c0b1] to-[#0891b2]';
   };
 
   const getHeatLevel = (mention_count: number) => {
-    if (mention_count >= 20) return '🔥🔥🔥';
-    if (mention_count >= 10) return '🔥🔥';
-    if (mention_count >= 5) return '🔥';
-    return '';
+    if (mention_count >= 20) return 3;
+    if (mention_count >= 10) return 2;
+    if (mention_count >= 5) return 1;
+    return 0;
   };
 
 
@@ -676,19 +834,204 @@ export default function StocksPage() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50 py-8">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+    <div className={`min-h-screen py-8 ${isDarkMode ? 'bg-[#17191c]' : 'bg-gray-50'}`}>
+      <div className={`mx-auto px-4 sm:px-6 lg:px-8 ${isCollapsed ? 'max-w-none' : 'max-w-7xl'}`}>
+        {/* Status Bar - Above Header */}
+        <div className={`mb-4 ${isCollapsed ? 'hidden sm:hidden' : ''}`}>
+          <div className="flex justify-end items-center gap-3">
+            <div className="flex items-center gap-2 text-sm">
+              <div className={`w-3 h-3 rounded-full ${connected ? 'bg-green-400' : 'bg-red-400'}`}></div>
+              <span className={`text-sm hidden sm:block ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                {connected ? 'Connected' : 'Disconnected'}
+              </span>
+            </div>
+            {mounted && lastUpdate && (
+              <div className={`text-sm hidden sm:block ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                Last update: {format(lastUpdate, 'HH:mm:ss')}
+              </div>
+            )}
+            {/* Dark Mode Toggle */}
+            <button
+              onClick={() => toggleDarkMode(!isDarkMode)}
+              className={`p-2 rounded-lg transition-colors hidden sm:block ${isDarkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-100'}`}
+              aria-label="Toggle dark mode"
+            >
+              {isDarkMode ? (
+                <FaSun className="w-4 h-4 text-yellow-400" />
+              ) : (
+                <FaMoon className="w-4 h-4 text-gray-600" />
+              )}
+            </button>
+            {/* Expand/Collapse Toggle */}
+            <button
+              className={`p-2 rounded-lg transition-colors hidden sm:block ${isDarkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-100'}`}
+              onClick={() => toggleExpand(!isCollapsed)}
+              aria-label={isCollapsed ? 'Expand view' : 'Collapse view'}
+            >
+              {isCollapsed ? (
+                <FaExpand className={`w-4 h-4 ${isDarkMode ? 'text-gray-300' : 'text-gray-600'}`} />
+              ) : (
+                <FaCompress className={`w-4 h-4 ${isDarkMode ? 'text-gray-300' : 'text-gray-600'}`} />
+              )}
+            </button>
+          </div>
+        </div>
+
         {/* Header */}
-        <div className="bg-white shadow-sm rounded-lg mb-6 p-4 sm:p-6">
+        <div className={`mb-6 p-4 sm:p-6 ${isCollapsed ? 'hidden sm:hidden' : ''}`}>
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-4">
-              {/* Mobile menu button */}
+              {/* HasJuice Logo + Lettering */}
+              <div className="flex items-center gap-1">
+                <Image 
+                  src="/images/has-juice-icon.png" 
+                  alt="HasJuice Logo" 
+                  width={178} 
+                  height={232}
+                  className="w-12 h-16"
+                />
+                <Image 
+                  src="/images/has-juice-lettering.png" 
+                  alt="HasJuice" 
+                  width={274} 
+                  height={105}
+                  className="w-20 h-8"
+                />
+              </div>
+              
+              {/* Navigation - Simple text with active states */}
+              <div className={`hidden sm:flex items-center gap-6 ml-8 ${searchFocused ? 'opacity-0 pointer-events-none' : 'opacity-100'} transition-opacity duration-200`}>
+                <button
+                  onClick={() => handleDateRangeChange('today')}
+                  className={`text-sm font-medium transition-colors ${
+                    dateRange === 'today' 
+                      ? 'text-[#57bdb0]' 
+                      : isDarkMode ? 'text-gray-300 hover:text-white' : 'text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  today
+                </button>
+                <button
+                  onClick={() => handleDateRangeChange('week')}
+                  className={`text-sm font-medium transition-colors ${
+                    dateRange === 'week' 
+                      ? 'text-[#57bdb0]' 
+                      : isDarkMode ? 'text-gray-300 hover:text-white' : 'text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  this week
+                </button>
+                <button
+                  onClick={() => handleDateRangeChange('month')}
+                  className={`text-sm font-medium transition-colors ${
+                    dateRange === 'month' 
+                      ? 'text-[#57bdb0]' 
+                      : isDarkMode ? 'text-gray-300 hover:text-white' : 'text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  this month
+                </button>
+                <button
+                  onClick={() => handleDateRangeChange('all')}
+                  className={`text-sm font-medium transition-colors ${
+                    dateRange === 'all' 
+                      ? 'text-[#57bdb0]' 
+                      : isDarkMode ? 'text-gray-300 hover:text-white' : 'text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  all-time
+                </button>
+              </div>
+            </div>
+            <div className="flex items-center justify-end flex-1">
+              {/* Combo Search Bar - Hidden on mobile, expandable on desktop */}
+              <div className={`hidden sm:block relative transition-all duration-300 ${searchFocused ? 'w-[600px]' : 'w-64'}`}>
+                <div className="relative">
+                  <FaMagnifyingGlass className="absolute right-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-[#17191c]" />
+                  <input
+                    type="text"
+                    value={comboSearch}
+                    onChange={(e) => handleComboSearchChange(e.target.value)}
+                    onFocus={() => setSearchFocused(true)}
+                    onBlur={(e) => {
+                      // Delay hiding results to allow clicking on them
+                      setTimeout(() => {
+                        setSearchFocused(false);
+                        setShowSearchResults(false);
+                      }, 200);
+                    }}
+                    placeholder="Ticker / Trader"
+                    className="w-full pl-4 pr-10 py-2 rounded-full bg-[#58beb1] text-[#17191c] placeholder-[#17191c] focus:outline-none transition-all duration-300"
+                  />
+                </div>
+                
+                {/* Search Results Dropdown */}
+                {showSearchResults && (searchResults.tickers.length > 0 || searchResults.traders.length > 0) && (
+                  <div className={`absolute top-full left-0 right-0 mt-2 rounded-lg shadow-lg z-50 ${isDarkMode ? 'bg-gray-800 border border-gray-700' : 'bg-white border border-gray-200'}`}>
+                    {/* Ticker Results */}
+                    {searchResults.tickers.length > 0 && (
+                      <div className="p-2">
+                        <div className={`text-xs font-medium px-2 py-1 ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                          Tickers
+                        </div>
+                        {searchResults.tickers.map((ticker) => (
+                          <button
+                            key={ticker.ticker}
+                            onClick={() => addSearchItem('ticker', ticker.ticker, ticker)}
+                            className={`w-full text-left px-3 py-2 rounded-md hover:bg-opacity-10 hover:bg-[#08c0b1] flex items-center gap-2 ${isDarkMode ? 'text-white' : 'text-gray-900'}`}
+                          >
+                            <span className="font-bold text-[#08c0b1]">$</span>
+                            <span className="font-semibold">{ticker.ticker}</span>
+                            <span className={`text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                              {ticker.mentionCount} mentions
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    
+                    {/* Trader Results */}
+                    {searchResults.traders.length > 0 && (
+                      <div className="p-2">
+                        {searchResults.tickers.length > 0 && (
+                          <div className={`border-t ${isDarkMode ? 'border-gray-700' : 'border-gray-200'} my-2`}></div>
+                        )}
+                        <div className={`text-xs font-medium px-2 py-1 ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                          Traders
+                        </div>
+                        {searchResults.traders.map((trader) => (
+                          <button
+                            key={trader.username}
+                            onClick={() => addSearchItem('trader', trader.username, trader)}
+                            className={`w-full text-left px-3 py-2 rounded-md hover:bg-opacity-10 hover:bg-[#08c0b1] flex items-center gap-2 ${isDarkMode ? 'text-white' : 'text-gray-900'}`}
+                          >
+                            <span className="font-bold text-[#08c0b1]">@</span>
+                            {trader.avatar_url ? (
+                              <img 
+                                src={trader.avatar_url} 
+                                alt={trader.display_name || trader.username}
+                                className="w-6 h-6 rounded-full"
+                              />
+                            ) : (
+                              <div className="w-6 h-6 rounded-full bg-[#08c0b1] flex items-center justify-center text-white text-xs font-bold">
+                                {(trader.display_name || trader.username).charAt(0).toUpperCase()}
+                              </div>
+                            )}
+                            <span className="font-semibold">{trader.display_name || trader.username}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+              {/* Mobile menu button - moved to right */}
               <button
                 onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-                className="sm:hidden p-2 rounded-md hover:bg-gray-100"
+                className={`sm:hidden p-2 rounded-md ${isDarkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-100'}`}
                 aria-label="Toggle menu"
               >
-                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <svg className={`w-6 h-6 ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   {mobileMenuOpen ? (
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                   ) : (
@@ -696,27 +1039,6 @@ export default function StocksPage() {
                   )}
                 </svg>
               </button>
-              <div>
-                <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">
-                  Stock Ticker Monitor
-                </h1>
-                <p className="text-sm sm:text-base text-gray-600 hidden sm:block">
-                  Real-time ticker extraction from Discord messages
-                </p>
-              </div>
-            </div>
-            <div className="flex items-center gap-3">
-              <div className="flex items-center gap-2 text-sm">
-                <div className={`w-3 h-3 rounded-full ${connected ? 'bg-green-400' : 'bg-red-400'}`}></div>
-                <span className="text-gray-600 hidden sm:inline">
-                  {connected ? 'Connected' : 'Disconnected'}
-                </span>
-              </div>
-              {mounted && lastUpdate && (
-                <div className="text-sm text-gray-500 hidden sm:block">
-                  Last update: {format(lastUpdate, 'HH:mm:ss')}
-                </div>
-              )}
             </div>
           </div>
         </div>
@@ -726,244 +1048,286 @@ export default function StocksPage() {
           <div
             className="fixed inset-0 bg-black bg-opacity-50 z-40 sm:hidden"
             onClick={() => setMobileMenuOpen(false)}
-          />
+          >
+            <div
+              className={`fixed right-0 top-0 h-full w-80 shadow-lg transform transition-transform duration-300 ease-in-out z-50 ${isDarkMode ? 'bg-gray-800' : 'bg-white'}`}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className={`p-6 border-b ${isDarkMode ? 'border-gray-700 text-white' : 'border-gray-200 text-gray-900'}`}>
+                <div className="flex items-center justify-between">
+                  <h2 className={`text-lg font-semibold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Filters & Stats</h2>
+                  <button
+                    onClick={() => setMobileMenuOpen(false)}
+                    className={`p-2 rounded-lg ${isDarkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-100'}`}
+                  >
+                    <svg className={`w-6 h-6 ${isDarkMode ? 'text-gray-300' : 'text-gray-600'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+                </div>
+                
+                
+                {/* Date Range */}
+                <div className="mb-6">
+                  <h3 className={`text-sm font-medium mb-2 ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>Date Range</h3>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      onClick={() => { handleDateRangeChange('today'); setMobileMenuOpen(false); }}
+                      className={`px-3 py-2 text-sm rounded-lg transition-colors ${
+                        dateRange === 'today' 
+                          ? 'bg-blue-600 text-white' 
+                          : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                      }`}
+                    >
+                      Today
+                    </button>
+                    <button
+                      onClick={() => { handleDateRangeChange('week'); setMobileMenuOpen(false); }}
+                      className={`px-3 py-2 text-sm rounded-lg transition-colors ${
+                        dateRange === 'week' 
+                          ? 'bg-blue-600 text-white' 
+                          : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                      }`}
+                    >
+                      This Week
+                    </button>
+                    <button
+                      onClick={() => { handleDateRangeChange('month'); setMobileMenuOpen(false); }}
+                      className={`px-3 py-2 text-sm rounded-lg transition-colors ${
+                        dateRange === 'month' 
+                          ? 'bg-blue-600 text-white' 
+                          : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                      }`}
+                    >
+                      This Month
+                    </button>
+                    <button
+                      onClick={() => { handleDateRangeChange('all'); setMobileMenuOpen(false); }}
+                      className={`px-3 py-2 text-sm rounded-lg transition-colors ${
+                        dateRange === 'all' 
+                          ? 'bg-blue-600 text-white' 
+                          : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                      }`}
+                    >
+                      All Time
+                    </button>
+                  </div>
+                </div>
+                
+                {/* Combo Search */}
+                <div className="mb-6">
+                  <h3 className={`text-sm font-medium mb-2 ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>Search</h3>
+                  <div className="relative">
+                    <div className={`flex items-center border rounded-lg px-3 py-2 ${isDarkMode ? 'border-gray-600 bg-gray-700' : 'border-gray-300 bg-white'}`}>
+                      <FaMagnifyingGlass className={`w-4 h-4 mr-3 ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`} />
+                      <input
+                        type="text"
+                        value={comboSearch}
+                        onChange={(e) => handleComboSearchChange(e.target.value)}
+                        onFocus={() => setShowSearchResults(true)}
+                        placeholder="Search tickers or traders..."
+                        className={`flex-1 bg-transparent outline-none ${isDarkMode ? 'text-white placeholder-gray-400' : 'text-gray-900 placeholder-gray-500'}`}
+                      />
+                    </div>
+
+                    {/* Search Results Dropdown */}
+                    {showSearchResults && comboSearch && (
+                      <div className={`absolute top-full left-0 right-0 mt-1 border rounded-lg shadow-lg z-50 max-h-60 overflow-y-auto ${isDarkMode ? 'bg-gray-800 border-gray-600' : 'bg-white border-gray-300'}`}>
+                        {[...searchResults.tickers, ...searchResults.traders].map((result, index) => (
+                          <button
+                            key={`${result.type}-${result.value}`}
+                            onClick={() => {
+                              addSearchItem(result.type, result.value, result.data);
+                              setMobileMenuOpen(false);
+                            }}
+                            className={`w-full px-4 py-3 text-left hover:bg-opacity-50 transition-colors flex items-center gap-3 ${isDarkMode ? 'hover:bg-gray-700 text-white' : 'hover:bg-gray-100 text-gray-900'}`}
+                          >
+                            {result.type === 'ticker' ? (
+                              <>
+                                <span className="font-bold text-[#08c0b1]">$</span>
+                                <span className="font-semibold">{result.value}</span>
+                              </>
+                            ) : (
+                              <>
+                                {result.data?.avatar_url ? (
+                                  <img 
+                                    src={result.data.avatar_url} 
+                                    alt={result.data.display_name || result.data.username}
+                                    className="w-8 h-8 rounded-full"
+                                  />
+                                ) : (
+                                  <div className="w-8 h-8 rounded-full bg-gray-400 flex items-center justify-center">
+                                    <span className="text-white text-sm font-medium">
+                                      {(result.data?.display_name || result.data?.username || result.value || '?').charAt(0).toUpperCase()}
+                                    </span>
+                                  </div>
+                                )}
+                                <span className="font-medium">{result.data?.display_name || result.data?.username || result.value}</span>
+                              </>
+                            )}
+                          </button>
+                        ))}
+                        {searchResults.tickers.length === 0 && searchResults.traders.length === 0 && (
+                          <div className={`px-4 py-3 text-center ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                            No results found
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+        
+        {/* Search Filter Chips - Below Header */}
+        {(filter || selectedTraders.length > 0 || selectedSearchItems.length > 0) && (
+          <div className={`mb-6 ${isCollapsed ? 'hidden sm:hidden' : ''}`}>
+            <div className="flex flex-wrap gap-2">
+              {/* Ticker Filter Chip */}
+              {filter && (
+                <div className={`inline-flex items-center gap-3 px-4 py-2 rounded-full ${isDarkMode ? 'bg-gray-700 text-gray-300' : 'bg-gray-100 text-gray-700'}`}>
+                  <span className="text-base">Ticker: {filter}</span>
+                  <button
+                    onClick={() => setFilter('')}
+                    className={`hover:bg-gray-600 rounded-full p-1 ml-1 ${isDarkMode ? 'text-gray-400 hover:text-white' : 'text-gray-500 hover:text-gray-700'}`}
+                  >
+                    <FaTimes className="w-3 h-3" />
+                  </button>
+                </div>
+              )}
+              
+              {/* Selected Search Items Chips */}
+              {selectedSearchItems.map((item, index) => (
+                <div key={`${item.type}-${item.value}`} className={`inline-flex items-center gap-3 px-4 py-2 rounded-full ${isDarkMode ? 'bg-gray-700 text-gray-300' : 'bg-gray-100 text-gray-700'}`}>
+                  {item.type === 'ticker' ? (
+                    <>
+                      <span className="font-bold text-[#08c0b1] text-base">$</span>
+                      <span className="font-semibold text-base">{item.value}</span>
+                    </>
+                  ) : (
+                    <>
+                      {item.data?.avatar_url ? (
+                        <img 
+                          src={item.data.avatar_url} 
+                          alt={item.data.display_name || item.data.username}
+                          className="w-8 h-8 rounded-full"
+                        />
+                      ) : (
+                        <div className="w-8 h-8 rounded-full bg-[#08c0b1] flex items-center justify-center text-white text-sm font-bold">
+                          {(item.data?.display_name || item.value).charAt(0).toUpperCase()}
+                        </div>
+                      )}
+                      <span className="font-medium text-base">{item.data?.display_name || item.value}</span>
+                    </>
+                  )}
+                  <button
+                    onClick={() => removeSearchItem(index)}
+                    className={`hover:bg-gray-600 rounded-full p-1 ml-1 ${isDarkMode ? 'text-gray-400 hover:text-white' : 'text-gray-500 hover:text-gray-700'}`}
+                  >
+                    <FaTimes className="w-3 h-3" />
+                  </button>
+                </div>
+              ))}
+              
+              {/* Legacy Selected Traders Chips (for traders not added via combo search) */}
+              {selectedTraders.filter(trader => 
+                !selectedSearchItems.some(item => item.type === 'trader' && item.data?.username === trader.username)
+              ).map((trader, index) => (
+                <div key={trader.username} className={`inline-flex items-center gap-3 px-4 py-2 rounded-full ${isDarkMode ? 'bg-gray-700 text-gray-300' : 'bg-gray-100 text-gray-700'}`}>
+                  {trader.avatar_url ? (
+                    <img 
+                      src={trader.avatar_url} 
+                      alt={trader.display_name || trader.username}
+                      className="w-8 h-8 rounded-full"
+                    />
+                  ) : (
+                    <div className="w-8 h-8 rounded-full bg-[#08c0b1] flex items-center justify-center text-white text-sm font-bold">
+                      {(trader.display_name || trader.username).charAt(0).toUpperCase()}
+                    </div>
+                  )}
+                  <span className="text-base font-medium">{trader.display_name || trader.username}</span>
+                  <button
+                    onClick={() => handleTradersChange(selectedTraders.filter((_, i) => i !== index))}
+                    className={`hover:bg-gray-600 rounded-full p-1 ml-1 ${isDarkMode ? 'text-gray-400 hover:text-white' : 'text-gray-500 hover:text-gray-700'}`}
+                  >
+                    <FaTimes className="w-3 h-3" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
         )}
 
-        {/* Mobile Drawer */}
-        <div
-          className={`fixed top-0 left-0 h-full w-80 bg-white shadow-xl z-50 transform transition-transform duration-300 sm:hidden ${
-            mobileMenuOpen ? 'translate-x-0' : '-translate-x-full'
-          }`}
-        >
-          <div className="p-4 border-b">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-semibold">Filters & Controls</h2>
-              <button
-                onClick={() => setMobileMenuOpen(false)}
-                className="p-2 rounded-md hover:bg-gray-100"
-                aria-label="Close menu"
-              >
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
-            </div>
-            
-            {/* Search Input - Priority in mobile */}
-            <input
-              type="text"
-              value={filter}
-              onChange={handleFilterChange}
-              placeholder="Filter tickers..."
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent mb-4"
-            />
-          </div>
-          
-          <div className="p-4 overflow-y-auto" style={{ height: 'calc(100% - 120px)' }}>
-            {/* Date Range */}
-            <div className="mb-6">
-              <h3 className="text-sm font-medium text-gray-700 mb-2">Date Range</h3>
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  onClick={() => { setDateRange('today'); setMobileMenuOpen(false); }}
-                  className={`px-3 py-2 text-sm rounded-lg transition-colors ${
-                    dateRange === 'today' 
-                      ? 'bg-blue-600 text-white' 
-                      : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-                  }`}
-                >
-                  Today
-                </button>
-                <button
-                  onClick={() => { setDateRange('week'); setMobileMenuOpen(false); }}
-                  className={`px-3 py-2 text-sm rounded-lg transition-colors ${
-                    dateRange === 'week' 
-                      ? 'bg-blue-600 text-white' 
-                      : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-                  }`}
-                >
-                  This Week
-                </button>
-                <button
-                  onClick={() => { setDateRange('month'); setMobileMenuOpen(false); }}
-                  className={`px-3 py-2 text-sm rounded-lg transition-colors ${
-                    dateRange === 'month' 
-                      ? 'bg-blue-600 text-white' 
-                      : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-                  }`}
-                >
-                  This Month
-                </button>
-                <button
-                  onClick={() => { setDateRange('all'); setMobileMenuOpen(false); }}
-                  className={`px-3 py-2 text-sm rounded-lg transition-colors ${
-                    dateRange === 'all' 
-                      ? 'bg-blue-600 text-white' 
-                      : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-                  }`}
-                >
-                  All Time
-                </button>
-              </div>
-            </div>
-            
-            {/* Trader Filter */}
-            <div className="mb-6">
-              <h3 className="text-sm font-medium text-gray-700 mb-2">Trader Filter</h3>
-              <TraderFilter
-                selectedTraders={selectedTraders}
-                onTradersChange={handleTradersChange}
-              />
-            </div>
-            
-            {/* Stats */}
-            <div className="mb-6">
-              <h3 className="text-sm font-medium text-gray-700 mb-2">Statistics</h3>
-              <div className="space-y-3">
-                <div className="bg-blue-50 p-3 rounded-lg">
-                  <p className="text-sm text-blue-600 font-medium">Total Tickers</p>
-                  <p className="text-2xl font-bold text-blue-900">{stocks.length}</p>
-                </div>
-                <div className="bg-green-50 p-3 rounded-lg">
-                  <p className="text-sm text-green-600 font-medium">Most Mentioned</p>
-                  <p className="text-2xl font-bold text-green-900">
-                    {stocks[0]?.ticker || '-'}
-                  </p>
-                </div>
-                <div className="bg-purple-50 p-3 rounded-lg">
-                  <p className="text-sm text-purple-600 font-medium">Highest Count</p>
-                  <p className="text-2xl font-bold text-purple-900">
-                    {stocks[0]?.mention_count || 0}
-                  </p>
-                </div>
-                <div className="bg-orange-50 p-3 rounded-lg">
-                  <p className="text-sm text-orange-800 font-medium">Hot Tickers (10+)</p>
-                  <p className="text-2xl font-bold text-orange-900">
-                    {stocks.filter(s => s.mentionCount >= 10).length}
-                  </p>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-        
-        {/* Desktop Controls - Hidden on Mobile */}
-        <div className="hidden sm:block bg-white shadow-sm rounded-lg mb-6 p-6">
-          {/* Date Range Selector */}
-          <div className="flex flex-wrap gap-2 mb-4">
-            <button
-              onClick={() => setDateRange('today')}
-              className={`px-3 py-1.5 sm:px-4 sm:py-2 text-sm sm:text-base rounded-lg transition-colors ${
-                dateRange === 'today' 
-                  ? 'bg-blue-600 text-white' 
-                  : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-              }`}
-            >
-              Today
-            </button>
-            <button
-              onClick={() => setDateRange('week')}
-              className={`px-3 py-1.5 sm:px-4 sm:py-2 text-sm sm:text-base rounded-lg transition-colors ${
-                dateRange === 'week' 
-                  ? 'bg-blue-600 text-white' 
-                  : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-              }`}
-            >
-              This Week
-            </button>
-            <button
-              onClick={() => setDateRange('month')}
-              className={`px-3 py-1.5 sm:px-4 sm:py-2 text-sm sm:text-base rounded-lg transition-colors ${
-                dateRange === 'month' 
-                  ? 'bg-blue-600 text-white' 
-                  : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-              }`}
-            >
-              This Month
-            </button>
-            <button
-              onClick={() => setDateRange('all')}
-              className={`px-3 py-1.5 sm:px-4 sm:py-2 text-sm sm:text-base rounded-lg transition-colors ${
-                dateRange === 'all' 
-                  ? 'bg-blue-600 text-white' 
-                  : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-              }`}
-            >
-              All Time
-            </button>
-          </div>
-          
-          {/* Filter */}
-          <input
-            type="text"
-            value={filter}
-            onChange={handleFilterChange}
-            placeholder="Filter tickers..."
-            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-          />
-
-          {/* Trader Filter */}
-          <TraderFilter
-            selectedTraders={selectedTraders}
-            onTradersChange={handleTradersChange}
-            className="mt-4"
-          />
-          
-          {/* Stats */}
-          <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-4">
-            <div className="bg-blue-50 p-3 rounded-lg">
-              <p className="text-sm text-blue-600 font-medium">Total Tickers</p>
-              <p className="text-2xl font-bold text-blue-900">{stocks.length}</p>
-            </div>
-            <div className="bg-green-50 p-3 rounded-lg">
-              <p className="text-sm text-green-600 font-medium">Most Mentioned</p>
-              <p className="text-2xl font-bold text-green-900">
-                {stocks[0]?.ticker || '-'}
-              </p>
-            </div>
-            <div className="bg-purple-50 p-3 rounded-lg">
-              <p className="text-sm text-purple-600 font-medium">Highest Count</p>
-              <p className="text-2xl font-bold text-purple-900">
-                {stocks[0]?.mention_count || 0}
-              </p>
-            </div>
-            <div className="bg-orange-50 p-3 rounded-lg">
-              <p className="text-sm text-orange-800 font-medium">Hot Tickers (10+)</p>
-              <p className="text-2xl font-bold text-orange-900">
-                {stocks.filter(s => s.mentionCount >= 10).length}
-              </p>
-            </div>
-          </div>
-        </div>
+        {/* Collapse Button - Absolute positioned when collapsed */}
+        {isCollapsed && (
+          <button
+            className={`fixed top-4 right-4 z-50 p-2 shadow-lg rounded-lg transition-colors hidden sm:block ${isDarkMode ? 'bg-gray-800 hover:bg-gray-700' : 'bg-white hover:bg-gray-100'}`}
+            aria-label="Collapse"
+            onClick={() => toggleExpand(false)}
+          >
+            <BiCollapse className={`w-4 h-4 ${isDarkMode ? 'text-gray-300' : 'text-gray-600'}`} />
+          </button>
+        )}
 
         {/* Stock Cards Grid */}
         {loading ? (
           <div className="flex justify-center items-center h-64">
-            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-gray-900"></div>
+            <div className={`animate-spin rounded-full h-12 w-12 border-b-2 ${isDarkMode ? 'border-white' : 'border-gray-900'}`}></div>
           </div>
         ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+          <div className={`grid gap-4 ${isCollapsed ? 'grid-cols-[repeat(auto-fit,minmax(280px,1fr))]' : 'grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4'}`}>
             {filteredStocks.map((stock) => (
               <div
                 key={stock.ticker}
                 className="relative overflow-hidden rounded-xl shadow-lg hover:shadow-2xl transition-all duration-300 transform hover:-translate-y-1 cursor-pointer"
                 onClick={() => {
-                  const tradersParam = selectedTraders.length > 0 
-                    ? `?traders=${selectedTraders.map(t => t.username).join(',')}` 
-                    : '';
-                  router.push(`/ticker/${stock.ticker}${tradersParam}`);
+                  const params = new URLSearchParams();
+                  if (selectedTraders.length > 0) {
+                    params.set('traders', selectedTraders.map(t => t.username).join(','));
+                  }
+                  if (isDarkMode) {
+                    params.set('dark', 'true');
+                  }
+                  if (dateRange !== 'all') {
+                    params.set('range', dateRange);
+                  }
+                  const queryString = params.toString() ? `?${params.toString()}` : '';
+                  router.push(`/ticker/${stock.ticker}${queryString}`);
                 }}
               >
                 {/* Card Background with Gradient */}
                 <div className={`${getCardColor(stock.mentionCount)} p-6 text-white`}>
-                  {/* Heat Indicator */}
-                  <div className="absolute top-2 right-2 text-2xl">
-                    {getHeatLevel(stock.mentionCount)}
-                  </div>
-                  
-                  {/* Ticker Symbol */}
-                  <div className="text-3xl sm:text-4xl md:text-5xl font-black mb-2 tracking-tight">
-                    ${stock.ticker}
+                  {/* Ticker Symbol with Heat Indicator */}
+                  <div className="flex items-center mb-2">
+                    <div className="text-3xl sm:text-4xl md:text-5xl font-black tracking-tight">
+                      ${stock.ticker}
+                    </div>
+                    <div className="flex items-center -space-x-1 ml-auto mr-[-15px]">
+                      {getHeatLevel(stock.mentionCount) > 0 ? (
+                        // Fire cards: show juice box icons
+                        Array.from({ length: getHeatLevel(stock.mentionCount) }, (_, i) => (
+                          <Image
+                            key={i}
+                            src="/images/juice.png"
+                            alt="juice"
+                            width={32}
+                            height={32}
+                            className=""
+                          />
+                        ))
+                      ) : (
+                        // Blue cards: show look icon
+                        <Image
+                          src="/images/look.png"
+                          alt="look"
+                          width={32}
+                          height={32}
+                          className=""
+                        />
+                      )}
+                    </div>
                   </div>
                   
                   {/* Mention Count */}
@@ -1022,12 +1386,26 @@ export default function StocksPage() {
                   
                   {/* First Mention Info */}
                   {stock.firstMention && (
-                    <div className="border-t border-white/20 pt-3 space-y-2">
-                      <div className="text-xs opacity-75">First mention</div>
-                      <div className="text-sm font-medium">
-                        {format(new Date(stock.firstMention), 'h:mmaaa')} CST
+                    <div className="border-t border-white/20 pt-3 space-y-1">
+                      {/* First mention label and price on same line */}
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs opacity-75">First mention</span>
+                        {stock.firstMentionPrice && (
+                          <span className="text-sm font-bold text-white">
+                            ${stock.firstMentionPrice.toFixed(2)}
+                          </span>
+                        )}
                       </div>
-                      <div className="text-xs opacity-90">
+                      {/* Time and By - Limited to 30 chars */}
+                      <div className="text-xs opacity-90 truncate">
+                        {(() => {
+                          const time = format(new Date(stock.firstMention), 'h:mmaaa');
+                          const author = stock.firstMentionAuthor ? ` by @${stock.firstMentionAuthor}` : '';
+                          const fullText = `${time}${author}`;
+                          return fullText.length > 30 ? fullText.substring(0, 30) + '...' : fullText;
+                        })()}
+                      </div>
+                      <div className="text-xs opacity-75">
                         {stock.uniqueAuthors} unique author{stock.uniqueAuthors !== 1 ? 's' : ''}
                       </div>
                     </div>
@@ -1043,10 +1421,10 @@ export default function StocksPage() {
         {!loading && filteredStocks.length === 0 && (
           <div className="text-center py-12">
             <div className="text-6xl mb-4">📊</div>
-            <p className="text-gray-500 text-lg">
+            <p className={`text-lg ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
               {filter ? `No tickers found matching "${filter}"` : 'No stock tickers detected yet'}
             </p>
-            <p className="text-gray-400 text-sm mt-2">
+            <p className={`${isDarkMode ? 'text-gray-500' : 'text-gray-600'}`}>
               {connected ? 'Waiting for new messages...' : 'Connecting to live feed...'}
             </p>
           </div>

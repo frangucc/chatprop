@@ -38,14 +38,14 @@ export async function GET(request: NextRequest) {
 
     const users = result.rows.map(row => ({
       username: row.username,
-      nickname: row.author_nickname,
-      avatar: row.avatar_url,
+      display_name: row.author_nickname,
+      avatar_url: row.avatar_url,
       stocksMentioned: parseInt(row.stocks_mentioned) || 0,
       lastActivity: row.last_activity,
       isTrader: row.is_trader || false
     }));
 
-    return NextResponse.json(users);
+    return NextResponse.json({ users });
   } catch (error) {
     console.error('Error searching users:', error);
     return NextResponse.json(

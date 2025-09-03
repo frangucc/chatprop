@@ -18,13 +18,15 @@ interface TraderFilterProps {
   onTradersChange: (traders: Trader[]) => void;
   placeholder?: string;
   className?: string;
+  isDarkMode?: boolean;
 }
 
 export default function TraderFilter({ 
   selectedTraders, 
   onTradersChange, 
   placeholder = "@username - Filter by trader...",
-  className = ""
+  className = "",
+  isDarkMode = false
 }: TraderFilterProps) {
   const [traderSearch, setTraderSearch] = useState('');
   const [searchResults, setSearchResults] = useState<Trader[]>([]);
@@ -108,13 +110,13 @@ export default function TraderFilter({
           onChange={handleTraderSearchChange}
           onKeyDown={handleTraderSearchKeyDown}
           onFocus={() => traderSearch.length >= 2 && setShowDropdown(true)}
-          className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent"
+          className={`w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent ${isDarkMode ? 'bg-gray-700 border-gray-600 text-white placeholder-gray-400' : 'bg-white border-gray-300 text-gray-900'}`}
         />
         
         {/* Search Dropdown */}
         {showDropdown && searchResults.length > 0 && (
           <div 
-            className="absolute w-full mt-1 bg-white border border-gray-200 rounded-lg shadow-2xl max-h-60 overflow-y-auto" 
+            className={`absolute w-full mt-1 border rounded-lg shadow-2xl max-h-60 overflow-y-auto ${isDarkMode ? 'bg-gray-800 border-gray-600' : 'bg-white border-gray-200'}`} 
             style={{
               position: 'absolute',
               zIndex: 2147483647,
@@ -127,7 +129,7 @@ export default function TraderFilter({
               <div
                 key={user.username}
                 onClick={() => addTrader(user)}
-                className="flex items-center gap-3 px-4 py-3 hover:bg-gray-50 cursor-pointer border-b border-gray-100 last:border-b-0"
+                className={`flex items-center gap-3 px-4 py-3 cursor-pointer border-b last:border-b-0 ${isDarkMode ? 'hover:bg-gray-700 border-gray-600' : 'hover:bg-gray-50 border-gray-100'}`}
               >
                 <img
                   src={user.avatar_url || user.avatar || '/api/placeholder/32/32'}
@@ -135,14 +137,14 @@ export default function TraderFilter({
                   className="w-8 h-8 rounded-full"
                 />
                 <div className="flex-1">
-                  <div className="font-medium text-gray-900">
+                  <div className={`font-medium ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
                     {user.nickname || user.username}
                   </div>
                   {user.nickname && (
-                    <div className="text-sm text-gray-500">@{user.username}</div>
+                    <div className={`text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>@{user.username}</div>
                   )}
                 </div>
-                <div className="text-sm text-gray-500">
+                <div className={`text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
                   {user.stock_count || user.stocksMentioned} stocks
                 </div>
               </div>
@@ -157,7 +159,7 @@ export default function TraderFilter({
           {selectedTraders.map((trader) => (
             <div
               key={trader.username}
-              className="inline-flex items-center gap-2 px-3 py-1 bg-green-100 text-green-800 rounded-full text-sm"
+              className={`inline-flex items-center gap-2 px-3 py-1 rounded-full text-sm ${isDarkMode ? 'bg-green-900/30 text-green-300 border border-green-700' : 'bg-green-100 text-green-800'}`}
             >
               <img
                 src={trader.avatar_url || trader.avatar || '/api/placeholder/20/20'}
@@ -169,14 +171,14 @@ export default function TraderFilter({
               </span>
               <button
                 onClick={() => removeTrader(trader.username)}
-                className="ml-1 text-green-600 hover:text-green-800"
+                className={`ml-1 ${isDarkMode ? 'text-green-400 hover:text-green-200' : 'text-green-600 hover:text-green-800'}`}
                 title="Remove trader filter"
               >
                 ×
               </button>
             </div>
           ))}
-          <div className="inline-flex items-center px-2 py-1 text-xs text-gray-500">
+          <div className={`inline-flex items-center px-2 py-1 text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
             Filtering by {selectedTraders.length} trader{selectedTraders.length !== 1 ? 's' : ''}
           </div>
         </div>

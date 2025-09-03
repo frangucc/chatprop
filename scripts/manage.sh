@@ -113,9 +113,9 @@ start_servers() {
   if port_listening 3000; then
     echo "Port 3000 already in use; skipping Next.js dev start"
   else
-    # Correct invocation: set cwd on PM2 (before args), then run npm script
-    pm2_safe start npm --name discord-viewer-dev --cwd "$VIEWER_DIR" -- run dev || \
-    (cd "$VIEWER_DIR" && nohup npm run dev >/tmp/discord-viewer-dev.log 2>&1 & echo "Started Next.js via nohup (fallback)")
+    # Use server.js to enable WebSocket support for real-time ticker updates
+    pm2_safe start "$VIEWER_DIR/server.js" --name discord-viewer-dev --cwd "$VIEWER_DIR" || \
+    (cd "$VIEWER_DIR" && nohup node server.js >/tmp/discord-viewer-dev.log 2>&1 & echo "Started Next.js with WebSocket via nohup (fallback)")
   fi
 
   # Start Rust live server on 7878 via PM2 if nothing is bound or named already
@@ -171,14 +171,29 @@ show_status() {
   lsof -nP -i TCP:7878 -sTCP:LISTEN || true
 }
 
+is_running() {
+  # Check if any of our key services are running
+  pm2_safe list 2>/dev/null | grep -E "(discord-monitor|ticker-extractor|discord-viewer-dev|databento-live-server)" | grep -q "online"
+}
+
 main() {
   local cmd="${1:-status}"
   case "$cmd" in
     start)
+      if is_running; then
+        echo "==> Services are running. Performing restart..."
+        stop_servers
+        echo "==> Waiting for cleanup..."
+        sleep 2
+        echo "==> Starting fresh with full catch-up..."
+      else
+        echo "==> Services are stopped. Performing fresh start..."
+      fi
       ensure_dirs
       export_today
       catch_up_processing
       start_servers
+      echo "==> All services started! Web UI: http://localhost:3000"
       ;;
     start-lite)
       # Start only the servers, skip exports and catch-up processing
