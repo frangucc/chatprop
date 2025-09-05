@@ -9,7 +9,9 @@ import { FaExpand, FaCompress, FaTimes } from 'react-icons/fa';
 import { BiCollapse } from 'react-icons/bi';
 import { FaSun, FaMoon } from 'react-icons/fa';
 import { FaMagnifyingGlass } from 'react-icons/fa6';
+import { RiLineChartLine } from 'react-icons/ri';
 import Image from 'next/image';
+import ChartModal from '@/components/ChartModal';
 
 interface Stock {
   ticker: string;
@@ -78,6 +80,8 @@ export default function StocksPage() {
   const [refreshingInfo, setRefreshingInfo] = useState<Map<string, { started: number; lastTs: number | null }>>(new Map());
   // Priority boost for next poll cycles when user manually refreshes
   const priorityBoostRef = React.useRef<Map<string, number>>(new Map());
+  // Chart modal state
+  const [chartModal, setChartModal] = useState<{ isOpen: boolean; symbol: string }>({ isOpen: false, symbol: '' });
 
   const refreshTicker = async (symbol: string) => {
     const key = symbol.toUpperCase();
@@ -833,6 +837,14 @@ export default function StocksPage() {
     }
   };
 
+  const openChart = (symbol: string) => {
+    setChartModal({ isOpen: true, symbol });
+  };
+
+  const closeChart = () => {
+    setChartModal({ isOpen: false, symbol: '' });
+  };
+
   return (
     <div className={`min-h-screen py-8 ${isDarkMode ? 'bg-[#17191c]' : 'bg-gray-50'}`}>
       <div className={`mx-auto px-4 sm:px-6 lg:px-8 ${isCollapsed ? 'max-w-none' : 'max-w-7xl'}`}>
@@ -1358,30 +1370,41 @@ export default function StocksPage() {
                         </span>
                       )}
                     </div>
-                    <button
-                      className={`ml-auto p-1 rounded hover:bg-white/10 transition ${refreshing.has(stock.ticker.toUpperCase()) ? 'opacity-60 cursor-wait' : ''}`}
-                      title={`Refresh ${stock.ticker}`}
-                      aria-label={`Refresh ${stock.ticker}`}
-                      type="button"
-                      onClick={(e) => { e.preventDefault(); e.stopPropagation(); refreshTicker(stock.ticker); }}
-                      disabled={refreshing.has(stock.ticker.toUpperCase())}
-                    >
-                      <svg
-                        xmlns="http://www.w3.org/2000/svg"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        className={`h-4 w-4 ${refreshing.has(stock.ticker.toUpperCase()) ? 'animate-spin' : ''}`}
+                    <div className="ml-auto flex items-center gap-1">
+                      <button
+                        className="p-1 rounded hover:bg-white/10 transition"
+                        title={`View ${stock.ticker} chart`}
+                        aria-label={`View ${stock.ticker} chart`}
+                        type="button"
+                        onClick={(e) => { e.preventDefault(); e.stopPropagation(); openChart(stock.ticker); }}
                       >
-                        <polyline points="23 4 23 10 17 10" />
-                        <polyline points="1 20 1 14 7 14" />
-                        <path d="M3.51 9a9 9 0 0 1 14.13-3.36L23 10" />
-                        <path d="M20.49 15a9 9 0 0 1-14.13 3.36L1 14" />
-                      </svg>
-                    </button>
+                        <RiLineChartLine className="h-4 w-4" />
+                      </button>
+                      <button
+                        className={`p-1 rounded hover:bg-white/10 transition ${refreshing.has(stock.ticker.toUpperCase()) ? 'opacity-60 cursor-wait' : ''}`}
+                        title={`Refresh ${stock.ticker}`}
+                        aria-label={`Refresh ${stock.ticker}`}
+                        type="button"
+                        onClick={(e) => { e.preventDefault(); e.stopPropagation(); refreshTicker(stock.ticker); }}
+                        disabled={refreshing.has(stock.ticker.toUpperCase())}
+                      >
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          className={`h-4 w-4 ${refreshing.has(stock.ticker.toUpperCase()) ? 'animate-spin' : ''}`}
+                        >
+                          <polyline points="23 4 23 10 17 10" />
+                          <polyline points="1 20 1 14 7 14" />
+                          <path d="M3.51 9a9 9 0 0 1 14.13-3.36L23 10" />
+                          <path d="M20.49 15a9 9 0 0 1-14.13 3.36L1 14" />
+                        </svg>
+                      </button>
+                    </div>
                   </div>
                   
                   {/* First Mention Info */}
@@ -1430,6 +1453,14 @@ export default function StocksPage() {
           </div>
         )}
       </div>
+      
+      {/* Chart Modal */}
+      <ChartModal
+        symbol={chartModal.symbol}
+        isOpen={chartModal.isOpen}
+        onClose={closeChart}
+        isDarkMode={isDarkMode}
+      />
     </div>
   );
 }
