@@ -5,7 +5,7 @@ import { format } from 'date-fns';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import TraderFilter from '@/components/TraderFilter';
-import { FaExpand, FaCompress, FaTimes } from 'react-icons/fa';
+import { FaExpand, FaCompress, FaTimes, FaVolumeUp, FaSpinner, FaStop } from 'react-icons/fa';
 import { BiCollapse } from 'react-icons/bi';
 import { FaSun, FaMoon } from 'react-icons/fa';
 import { FaMagnifyingGlass } from 'react-icons/fa6';
@@ -82,6 +82,9 @@ export default function StocksPage() {
   const priorityBoostRef = React.useRef<Map<string, number>>(new Map());
   // Chart modal state
   const [chartModal, setChartModal] = useState<{ isOpen: boolean; symbol: string }>({ isOpen: false, symbol: '' });
+  // Audio state
+  const [audioState, setAudioState] = useState<{[ticker: string]: 'idle' | 'loading' | 'playing'}>({});
+  const [currentAudio, setCurrentAudio] = useState<{ticker: string, audio: HTMLAudioElement} | null>(null);
 
   const refreshTicker = async (symbol: string) => {
     const key = symbol.toUpperCase();
@@ -845,6 +848,97 @@ export default function StocksPage() {
     setChartModal({ isOpen: false, symbol: '' });
   };
 
+  const handleSquawkAudio = async (ticker: string) => {
+    const currentState = audioState[ticker] || 'idle';
+    
+    // If already playing, stop it
+    if (currentState === 'playing' && currentAudio?.ticker === ticker) {
+      currentAudio.audio.pause();
+      setCurrentAudio(null);
+      setAudioState(prev => ({ ...prev, [ticker]: 'idle' }));
+      return;
+    }
+
+    // If another ticker is playing, stop it first
+    if (currentAudio) {
+      currentAudio.audio.pause();
+      setAudioState(prev => ({ ...prev, [currentAudio.ticker]: 'idle' }));
+    }
+
+    // Start loading
+    setAudioState(prev => ({ ...prev, [ticker]: 'loading' }));
+    
+    try {
+      // Generate squawk report and convert to speech
+      const reportResponse = await fetch('/api/squawk-report', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ticker,
+          traders: selectedTraders.length > 0 ? selectedTraders.map(t => t.username) : undefined,
+          range: dateRange,
+        }),
+      });
+
+      if (!reportResponse.ok) {
+        throw new Error('Failed to generate squawk report');
+      }
+
+      const reportData = await reportResponse.json();
+      
+      // Clean the report text for audio
+      const cleanText = reportData.report
+        .replace(/[$]/g, 'dollar ') // Replace $ with "dollar" for better pronunciation
+        .replace(/[•-]/g, '') // Remove bullet points
+        .replace(/Key Takeaways:/g, '. Key takeaways.') // Better audio transition
+        .replace(/\n\n+/g, '. ') // Replace double newlines with periods
+        .replace(/\n/g, ' ') // Replace single newlines with spaces
+        .replace(/\s+/g, ' ') // Clean up multiple spaces
+        .trim();
+
+      // Convert to speech
+      const ttsResponse = await fetch('/api/text-to-speech', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: cleanText,
+          voice_id: 'pNInz6obpgDQGcFmaJgB' // Adam voice
+        }),
+      });
+
+      if (!ttsResponse.ok) {
+        throw new Error('Failed to generate speech');
+      }
+
+      const audioBlob = await ttsResponse.blob();
+      const audioUrl = URL.createObjectURL(audioBlob);
+      const audio = new Audio(audioUrl);
+      
+      audio.onplay = () => {
+        setAudioState(prev => ({ ...prev, [ticker]: 'playing' }));
+      };
+      
+      audio.onended = () => {
+        setAudioState(prev => ({ ...prev, [ticker]: 'idle' }));
+        setCurrentAudio(null);
+        URL.revokeObjectURL(audioUrl);
+      };
+      
+      audio.onerror = () => {
+        setAudioState(prev => ({ ...prev, [ticker]: 'idle' }));
+        setCurrentAudio(null);
+        URL.revokeObjectURL(audioUrl);
+      };
+      
+      setCurrentAudio({ ticker, audio });
+      await audio.play();
+
+    } catch (error) {
+      console.error('Error with squawk audio:', error);
+      setAudioState(prev => ({ ...prev, [ticker]: 'idle' }));
+    }
+  };
+
   return (
     <div className={`min-h-screen py-8 ${isDarkMode ? 'bg-[#17191c]' : 'bg-gray-50'}`}>
       <div className={`mx-auto px-4 sm:px-6 lg:px-8 ${isCollapsed ? 'max-w-none' : 'max-w-7xl'}`}>
@@ -1371,6 +1465,22 @@ export default function StocksPage() {
                       )}
                     </div>
                     <div className="ml-auto flex items-center gap-1">
+                      <button
+                        className="p-1 rounded hover:bg-white/10 transition"
+                        title={`Listen to ${stock.ticker} squawk report`}
+                        aria-label={`Listen to ${stock.ticker} squawk report`}
+                        type="button"
+                        onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleSquawkAudio(stock.ticker); }}
+                        disabled={audioState[stock.ticker] === 'loading'}
+                      >
+                        {audioState[stock.ticker] === 'loading' ? (
+                          <FaSpinner className="h-4 w-4 animate-spin" />
+                        ) : audioState[stock.ticker] === 'playing' ? (
+                          <FaStop className="h-4 w-4" />
+                        ) : (
+                          <FaVolumeUp className="h-4 w-4" />
+                        )}
+                      </button>
                       <button
                         className="p-1 rounded hover:bg-white/10 transition"
                         title={`View ${stock.ticker} chart`}

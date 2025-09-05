@@ -2,9 +2,10 @@
 
 import { useState, useEffect } from 'react';
 import { useParams, useSearchParams, useRouter } from 'next/navigation';
-import { FaMoon, FaSun, FaArrowLeft } from 'react-icons/fa';
+import { FaMoon, FaSun, FaArrowLeft, FaFileAlt } from 'react-icons/fa';
 import { format } from 'date-fns';
 import TraderFilter from '../../../components/TraderFilter';
+import SquawkReportModal from '../../../components/SquawkReportModal';
 
 interface Message {
   id: string;
@@ -56,6 +57,7 @@ export default function TickerChatsPage() {
   const [urlInitialized, setUrlInitialized] = useState(false);
   const [livePrices, setLivePrices] = useState<Map<string, { price: number; ts: number | null }>>(new Map());
   const [nowTick, setNowTick] = useState<number>(Date.now());
+  const [showSquawkModal, setShowSquawkModal] = useState(false);
   const router = useRouter();
 
   // Price formatter: truncate to 2 decimals (no rounding)
@@ -340,8 +342,26 @@ export default function TickerChatsPage() {
               </div>
             </div>
             
-            {/* Price Display Section */}
-            <div className="flex items-start gap-8">
+            {/* Controls and Price Display Section */}
+            <div className="flex items-start gap-6">
+              {/* Squawk Report Button */}
+              <div className="flex flex-col items-end">
+                <button
+                  onClick={() => setShowSquawkModal(true)}
+                  className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors ${
+                    isDarkMode
+                      ? 'bg-blue-600 hover:bg-blue-700 text-white'
+                      : 'bg-blue-600 hover:bg-blue-700 text-white'
+                  }`}
+                  title="Generate AI-powered squawk report"
+                >
+                  <FaFileAlt className="w-4 h-4" />
+                  Squawk Report
+                </button>
+                <p className={`text-xs mt-1 ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                  AI trading analysis
+                </p>
+              </div>
               {/* Last Price Display */}
               <div className="text-right">
                 <p className={`text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>Last price</p>
@@ -487,6 +507,16 @@ export default function TickerChatsPage() {
             </button>
           </div>
         )}
+
+        {/* Squawk Report Modal */}
+        <SquawkReportModal
+          isOpen={showSquawkModal}
+          onClose={() => setShowSquawkModal(false)}
+          ticker={ticker}
+          traders={selectedTraders.map(t => t.username)}
+          dateRange={dateRange}
+          isDarkMode={isDarkMode}
+        />
       </div>
     </div>
   );
