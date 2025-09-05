@@ -84,9 +84,9 @@ export async function GET(
     // Start at midnight CST (6 AM UTC) to catch all pre-market trades
     const startDate = new Date(`${date}T06:00:00.000Z`); // Midnight CST (6 AM UTC)
     
-    // Use current time with minimal delay for real-time data
+    // Use current time with realistic delay based on Databento's data availability
     const now = new Date();
-    const endDate = new Date(now.getTime() - 30 * 1000); // Just 30 seconds delay for real-time
+    const endDate = new Date(now.getTime() - 15 * 60 * 1000); // 15 minute delay (Databento's actual delay)
     
     const startStr = startDate.toISOString();
     const endStr = endDate.toISOString();

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 
 interface SimpleChartProps {
   symbol: string;
@@ -8,8 +8,85 @@ interface SimpleChartProps {
   isDarkMode?: boolean;
 }
 
+interface TraderMention {
+  messageId: string;
+  timestamp: string;
+  authorName: string;
+  authorNickname: string | null;
+  authorAvatarUrl: string;
+  price: number | null;
+  content: string;
+}
+
 export default function SimpleChart({ symbol, data, isDarkMode = false }: SimpleChartProps) {
   const chartContainerRef = useRef<HTMLDivElement>(null);
+  const [traderMentions, setTraderMentions] = useState<TraderMention[]>([]);
+  const chartInstanceRef = useRef<any>(null);
+  const lineSeriesRef = useRef<any>(null);
+
+  // Fetch trader mentions
+  useEffect(() => {
+    const fetchTraderMentions = async () => {
+      try {
+        const today = new Date().toISOString().split('T')[0];
+        const response = await fetch(`/api/chart/${symbol}/mentions?date=${today}`);
+        if (response.ok) {
+          const mentions = await response.json();
+          setTraderMentions(mentions);
+          console.log(`Loaded ${mentions.length} trader mentions for ${symbol}`);
+        }
+      } catch (error) {
+        console.error('Error fetching trader mentions:', error);
+      }
+    };
+
+    if (symbol) {
+      fetchTraderMentions();
+    }
+  }, [symbol]);
+
+  // Function to add trader markers using native chart markers
+  const addTraderMarkers = () => {
+    console.log('addTraderMarkers called', {
+      hasChart: !!chartInstanceRef.current,
+      hasLineSeries: !!lineSeriesRef.current,
+      mentionsCount: traderMentions.length
+    });
+    
+    if (!chartInstanceRef.current || !lineSeriesRef.current || traderMentions.length === 0) {
+      console.log('Early return from addTraderMarkers');
+      return;
+    }
+    
+    console.log('Adding trader markers:', traderMentions.map(m => ({
+      name: m.authorNickname || m.authorName,
+      price: m.price,
+      timestamp: m.timestamp
+    })));
+
+    // Create markers for trader mentions
+    const markers = traderMentions
+      .filter(mention => mention.price && mention.price > 0)
+      .map((mention, index) => {
+        const mentionTime = Math.floor(new Date(mention.timestamp).getTime() / 1000);
+        const traderName = mention.authorNickname || mention.authorName;
+        
+        console.log(`Creating marker for ${traderName}: time=${mentionTime}, price=${mention.price}`);
+        
+        return {
+          time: mentionTime,
+          position: 'aboveBar' as const,
+          color: '#ff6b35',
+          shape: 'circle' as const,
+          text: traderName[0].toUpperCase(),
+          size: 2
+        };
+      });
+    
+    console.log(`Setting ${markers.length} markers on line series`);
+    lineSeriesRef.current.setMarkers(markers);
+  };
+
 
   useEffect(() => {
     if (!chartContainerRef.current || !data || data.length === 0) return;
@@ -77,6 +154,7 @@ export default function SimpleChart({ symbol, data, isDarkMode = false }: Simple
         });
 
         chartInstance = chart;
+        chartInstanceRef.current = chart;
 
         // Add line series with cyan color
         const lineSeries = chart.addLineSeries({
@@ -88,6 +166,8 @@ export default function SimpleChart({ symbol, data, isDarkMode = false }: Simple
             minMove: 0.01,
           },
         });
+        
+        lineSeriesRef.current = lineSeries;
 
         // Debug: Log the raw data
         console.log('Chart received data points:', data.length);
@@ -119,12 +199,23 @@ export default function SimpleChart({ symbol, data, isDarkMode = false }: Simple
           chart.timeScale().fitContent();
         }
 
+        // Add trader markers after chart is ready
+        setTimeout(() => {
+          console.log('Timeout fired - attempting to add trader markers');
+          addTraderMarkers();
+        }, 500);
+
         // Handle resize
         const handleResize = () => {
           if (chartInstance && chartContainerRef.current) {
             chartInstance.applyOptions({
               width: chartContainerRef.current.clientWidth,
             });
+            // Re-add markers after resize
+            setTimeout(() => {
+              console.log('Re-adding markers after resize...');
+              addTraderMarkers();
+            }, 300);
           }
         };
 
@@ -137,6 +228,8 @@ export default function SimpleChart({ symbol, data, isDarkMode = false }: Simple
             chartInstance.remove();
             chartInstance = null;
           }
+          chartInstanceRef.current = null;
+          lineSeriesRef.current = null;
         };
 
       } catch (error) {
@@ -155,7 +248,7 @@ export default function SimpleChart({ symbol, data, isDarkMode = false }: Simple
         chartInstance = null;
       }
     };
-  }, [data, isDarkMode]);
+  }, [data, isDarkMode, traderMentions]);
 
   // Calculate time range for display
   const getTimeRangeDisplay = () => {
@@ -192,10 +285,12 @@ export default function SimpleChart({ symbol, data, isDarkMode = false }: Simple
           </p>
         )}
       </div>
-      <div 
-        ref={chartContainerRef} 
-        className="w-full h-[400px] rounded-lg border-0"
-      />
+      <div className="relative">
+        <div 
+          ref={chartContainerRef} 
+          className="w-full h-[400px] rounded-lg border-0"
+        />
+      </div>
     </div>
   );
 }
