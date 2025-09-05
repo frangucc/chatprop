@@ -11,7 +11,8 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: 'Missing symbols query param' }, { status: 400 });
     }
 
-    const upstreamUrl = `http://localhost:7878/api/live/prices?symbols=${encodeURIComponent(symbols)}`;
+    // Forward as-is (already encoded by client). Double-encoding breaks comma separation.
+    const upstreamUrl = `http://localhost:7878/api/live/prices?symbols=${symbols}`;
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 8000);

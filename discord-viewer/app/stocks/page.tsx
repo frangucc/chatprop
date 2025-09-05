@@ -252,7 +252,7 @@ export default function StocksPage() {
                 const results: LivePrice[] = [];
                 for (let idx = 0; idx < chunks.length; idx++) {
                   const chunk = chunks[idx];
-                  const qs = encodeURIComponent(chunk.join(','));
+                  const qs = chunk.join(',');
                   let attempt = 0;
                   while (true) {
                     try {
@@ -373,7 +373,7 @@ export default function StocksPage() {
         const aggregate: LivePrice[] = [];
         for (let i = 0; i < chunks.length; i++) {
           const chunk = chunks[i];
-          const qs = encodeURIComponent(chunk.join(','));
+          const qs = chunk.join(',');
           try {
             const res = await fetch(`/api/live/prices?symbols=${qs}`);
             if (res.ok) {

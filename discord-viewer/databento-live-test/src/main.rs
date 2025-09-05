@@ -148,11 +148,17 @@ async fn subscribe(
     
     // Filter new symbols we haven't subscribed to yet
     let mut new_symbols = Vec::new();
+    let has_active_prices = {
+        let prices = state.prices.read().await;
+        !prices.is_empty()
+    };
+    
     {
         let subscribed = state.subscribed_symbols.read().await;
         for sym in &body.symbols {
             let norm = norm_symbol(sym);
-            if !subscribed.contains(&norm) {
+            // If we have no active prices, force resubscription even if in the set
+            if !has_active_prices || !subscribed.contains(&norm) {
                 new_symbols.push(norm);
             }
         }
@@ -174,16 +180,30 @@ async fn subscribe(
         new_symbols.clone(),
         state.clone()
     ).await {
-        Ok(_) => {
+        Ok(actually_subscribed) => {
             // Mark symbols as subscribed
             let mut subscribed = state.subscribed_symbols.write().await;
-            for sym in new_symbols {
-                subscribed.insert(sym);
+            for sym in &actually_subscribed {
+                subscribed.insert(sym.clone());
             }
+            
+            // Wait a moment to see if we get symbol mappings
+            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+            
+            // Check which symbols actually have data
+            let valid_count = {
+                let prices = state.prices.read().await;
+                actually_subscribed.iter()
+                    .filter(|sym| prices.contains_key(*sym) || 
+                           prices.keys().any(|k| k.starts_with("INST:")))
+                    .count()
+            };
             
             (StatusCode::OK, Json(serde_json::json!({
                 "status": "ok",
-                "subscribed": body.symbols.len()
+                "requested": body.symbols.len(),
+                "subscribed": actually_subscribed.len(),
+                "valid": valid_count
             })))
         }
         Err(e) => {
@@ -333,9 +353,9 @@ async fn start_live_subscription(
     dataset: String,
     symbols: Vec<String>,
     state: AppState
-) -> Result<()> {
+) -> Result<Vec<String>> {
     if symbols.is_empty() {
-        return Ok(());
+        return Ok(vec![]);
     }
 
     let mut client = LiveClient::builder()
@@ -344,14 +364,35 @@ async fn start_live_subscription(
         .build()
         .await?;
 
-    let sub = Subscription::builder()
-        .schema(Schema::Trades)
-        .stype_in(SType::RawSymbol)
-        .symbols(symbols.clone())
-        .build();
-    client.subscribe(&sub).await?;
+    // Subscribe one symbol at a time to avoid a single bad ticker blocking the batch
+    let mut subscribed_symbols: Vec<String> = Vec::new();
+    for sym in symbols.iter() {
+        let sub_one = Subscription::builder()
+            .schema(Schema::Trades)
+            .stype_in(SType::RawSymbol)
+            .symbols(vec![sym.clone()])
+            .build();
+        match tokio::time::timeout(std::time::Duration::from_secs(3), client.subscribe(&sub_one)).await {
+            Ok(Ok(_)) => {
+                info!(symbol = %sym, "Subscribed to symbol");
+                subscribed_symbols.push(sym.clone());
+            }
+            Ok(Err(e)) => {
+                warn!(symbol = %sym, error = %e, "Subscription failed; skipping");
+            }
+            Err(_) => {
+                warn!(symbol = %sym, "Subscription timed out; skipping");
+            }
+        }
+    }
+
+    if subscribed_symbols.is_empty() {
+        warn!("No symbols subscribed; not starting client");
+        return Ok(vec![]);
+    }
+
     client.start().await?;
-    info!(?symbols, %dataset, "Live trades subscriber connected");
+    info!(symbols = ?subscribed_symbols, %dataset, "Live trades subscriber connected");
 
     tokio::spawn(async move {
         let mut trade_count = 0;
@@ -401,5 +442,5 @@ async fn start_live_subscription(
         info!("Live trades stream ended");
     });
 
-    Ok(())
+    Ok(subscribed_symbols)
 }
