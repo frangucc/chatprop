@@ -886,9 +886,9 @@ export default function StocksPage() {
 
       const reportData = await reportResponse.json();
       
-      // Clean the report text for audio
-      const cleanText = reportData.report
-        .replace(/[$]/g, 'dollar ') // Replace $ with "dollar" for better pronunciation
+      // Use the audio-optimized text if available, otherwise clean the readable text
+      const audioText = reportData.reportAudio || reportData.report;
+      const cleanText = audioText
         .replace(/[•-]/g, '') // Remove bullet points
         .replace(/Key Takeaways:/g, '. Key takeaways.') // Better audio transition
         .replace(/\n\n+/g, '. ') // Replace double newlines with periods

@@ -138,7 +138,6 @@ export default function SimpleChart({ symbol, data, isDarkMode = false }: Simple
           },
           timeScale: {
             borderColor: isDarkMode ? '#6b7280' : '#d1d5db',
-            textColor: isDarkMode ? '#e5e7eb' : '#374151',
             timeVisible: true,
             secondsVisible: false,
             tickMarkFormatter: (time: any) => {

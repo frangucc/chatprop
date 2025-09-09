@@ -14,12 +14,21 @@ interface SquawkReportModalProps {
 
 interface ReportData {
   report: string;
+  reportReadable?: string;
+  reportAudio?: string;
   metadata: {
     ticker: string;
     messageCount: number;
     dateRange: string;
     filteredTraders?: string[];
     currentPrice?: number;
+    priceData?: {
+      open: number;
+      high: number;
+      low: number;
+      close: number;
+      volume: number;
+    };
     timeGenerated: string;
   };
 }
@@ -116,9 +125,9 @@ export default function SquawkReportModal({
     setAudioLoading(true);
     
     try {
-      // Clean the report text for better speech
-      const cleanText = reportData.report
-        .replace(/[$]/g, 'dollar ') // Replace $ with "dollar" for better pronunciation
+      // Use the audio-optimized text if available, otherwise clean the readable text
+      const audioText = reportData.reportAudio || reportData.report;
+      const cleanText = audioText
         .replace(/[•-]/g, '') // Remove bullet points
         .replace(/Key Takeaways:/g, '. Key takeaways.') // Better audio transition
         .replace(/\n\n+/g, '. ') // Replace double newlines with periods
@@ -132,7 +141,7 @@ export default function SquawkReportModal({
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          text: cleanText, // Text is already formatted properly by the AI
+          text: cleanText, // Audio-optimized text from AI
           voice_id: 'pNInz6obpgDQGcFmaJgB' // Adam voice - good for financial content
         }),
       });
@@ -281,6 +290,27 @@ export default function SquawkReportModal({
                       </span>
                       <div className={`font-bold ${isDarkMode ? 'text-green-400' : 'text-green-600'}`}>
                         ${reportData.metadata.currentPrice.toFixed(2)}
+                      </div>
+                    </div>
+                  )}
+                  {reportData.metadata.priceData && (
+                    <div>
+                      <span className={`font-medium ${isDarkMode ? 'text-gray-300' : 'text-gray-600'}`}>
+                        Daily OHLC:
+                      </span>
+                      <div className="grid grid-cols-4 gap-2 mt-1">
+                        <div className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                          <span className="font-medium">Open:</span> ${reportData.metadata.priceData.open.toFixed(2)}
+                        </div>
+                        <div className={`text-xs ${isDarkMode ? 'text-green-400' : 'text-green-600'}`}>
+                          <span className="font-medium">High:</span> ${reportData.metadata.priceData.high.toFixed(2)}
+                        </div>
+                        <div className={`text-xs ${isDarkMode ? 'text-red-400' : 'text-red-600'}`}>
+                          <span className="font-medium">Low:</span> ${reportData.metadata.priceData.low.toFixed(2)}
+                        </div>
+                        <div className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                          <span className="font-medium">Close:</span> ${reportData.metadata.priceData.close.toFixed(2)}
+                        </div>
                       </div>
                     </div>
                   )}

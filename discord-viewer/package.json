@@ -8,6 +8,7 @@
     "dev-next": "next dev",
     "build": "next build",
     "start": "NODE_ENV=production node server.js",
+    "railway:start": "NODE_ENV=production node server.js",
     "start-next": "next start",
     "lint": "next lint",
     "migrate": "node scripts/migrate.js",
