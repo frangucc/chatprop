@@ -182,7 +182,7 @@ export default function SimpleChart({ symbol, data, isDarkMode = false }: Simple
             // Create date and convert to Unix timestamp for lightweight-charts
             const date = new Date(point.time);
             return {
-              time: Math.floor(date.getTime() / 1000),
+              time: Math.floor(date.getTime() / 1000) as any,
               value: point.close
             };
           });
