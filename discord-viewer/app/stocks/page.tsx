@@ -28,6 +28,7 @@ interface Stock {
   momentum: string;
   firstMentionPrice: number | null;
   firstMentionAuthor: string | null;
+  hod?: number | null; // High of Day
   surge?: {
     mentions5min: number;
     mentions15min: number;
@@ -76,6 +77,7 @@ export default function StocksPage() {
   const [selectedSearchItems, setSelectedSearchItems] = useState<{type: 'ticker' | 'trader', value: string, data?: any}[]>([]);
   // Store price and last event timestamp per symbol
   const [livePrices, setLivePrices] = useState<Map<string, { price: number; ts: number | null }>>(new Map());
+  const [hodData, setHodData] = useState<Map<string, number>>(new Map());
   // Tick every second to update 'seconds ago' counters
   const [nowTick, setNowTick] = useState<number>(Date.now());
   useEffect(() => {
@@ -226,10 +228,18 @@ export default function StocksPage() {
       }
       params.set('dateRange', dateRange);
       
-      const response = await fetch(`/api/stocks-v3?${params.toString()}`);
+      const response = await fetch(`/api/stocks-v3?${params.toString()}&_t=${Date.now()}`);
       if (response.ok) {
         const data = await response.json();
         const dedupedData = deduplicateStocks(data.stocks || []);
+        
+        // Debug: Log first few stocks to see their firstMentionPrice values
+        console.log('Stocks with firstMentionPrice:', dedupedData
+          .filter(s => s.firstMentionPrice !== null && s.firstMentionPrice !== undefined)
+          .slice(0, 5)
+          .map(s => ({ ticker: s.ticker, price: s.firstMentionPrice, author: s.firstMentionAuthor }))
+        );
+        
         setStocks(dedupedData);
         // Show UI immediately; run price work in background
         setLoading(false);
@@ -365,6 +375,45 @@ export default function StocksPage() {
               }
             } catch (error) {
               console.error('Error fetching live prices:', error);
+            }
+          })();
+
+          // Fetch High of Day for top tickers (limit to top 20 to be nice to Databento API)
+          (async () => {
+            try {
+              // Use the stocks data directly, sorted by juice level and mentions
+              const topStocks = dedupedData
+                .sort((a, b) => {
+                  const aJuice = getStockJuiceLevel(a);
+                  const bJuice = getStockJuiceLevel(b);
+                  if (aJuice !== bJuice) return bJuice - aJuice;
+                  return b.mentionCount - a.mentionCount;
+                })
+                .slice(0, 20); // Top 20 stocks
+              
+              const hodSymbols = topStocks.map(s => s.ticker.toUpperCase());
+              if (hodSymbols.length > 0) {
+                console.log(`Fetching HOD for ${hodSymbols.length} top tickers...`);
+                const hodQuery = hodSymbols.join(',');
+                const hodResponse = await fetch(`/api/hod/batch?symbols=${hodQuery}`);
+                if (hodResponse.ok) {
+                  const hodResults = await hodResponse.json();
+                  const hodMap = new Map<string, number>();
+                  let hodCount = 0;
+                  hodResults.forEach((result: any) => {
+                    if (result.hod !== null && result.hod > 0) {
+                      hodMap.set(result.symbol, result.hod);
+                      hodCount++;
+                    }
+                  });
+                  setHodData(hodMap);
+                  console.log(`Received ${hodCount} HOD values out of ${hodResults.length} requested`);
+                } else {
+                  console.warn('HOD fetch failed:', hodResponse.status);
+                }
+              }
+            } catch (error) {
+              console.error('Error fetching HOD data:', error);
             }
           })();
         }
@@ -1808,29 +1857,49 @@ export default function StocksPage() {
                     </div>
                   </div>
                   
-                  {/* First Mention Info */}
+                  {/* First Mention Info & HOD - 70/30 Layout */}
                   {stock.firstMention && (
-                    <div className="border-t border-white/20 pt-3 space-y-1">
-                      {/* First mention label and price on same line */}
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs opacity-75">First mention</span>
-                        {stock.firstMentionPrice && (
-                          <span className="text-sm font-bold text-white">
-                            ${stock.firstMentionPrice.toFixed(2)}
-                          </span>
-                        )}
-                      </div>
-                      {/* Time and By - Limited to 30 chars */}
-                      <div className="text-xs opacity-90 truncate">
-                        {(() => {
-                          const time = format(new Date(stock.firstMention), 'h:mmaaa');
-                          const author = stock.firstMentionAuthor ? ` by @${stock.firstMentionAuthor}` : '';
-                          const fullText = `${time}${author}`;
-                          return fullText.length > 30 ? fullText.substring(0, 30) + '...' : fullText;
-                        })()}
-                      </div>
-                      <div className="text-xs opacity-75">
-                        {stock.uniqueAuthors} unique author{stock.uniqueAuthors !== 1 ? 's' : ''}
+                    <div className="border-t border-white/20 pt-3">
+                      <div className="grid grid-cols-[70%,30%] gap-3">
+                        {/* Left Column (70%) - First Mention Info */}
+                        <div className="space-y-1">
+                          {/* First mention: $X.XX @ format */}
+                          <div className="text-xs opacity-90">
+                            <div>
+                              <span className="opacity-75">First mention: </span>
+                              {stock.firstMentionPrice ? (
+                                <span className="font-bold text-white">${stock.firstMentionPrice.toFixed(2)}</span>
+                              ) : (
+                                <span className="opacity-50">—</span>
+                              )}
+                            </div>
+                            <div className="truncate">
+                              {(() => {
+                                const time = format(new Date(stock.firstMention), 'h:mmaaa');
+                                const author = stock.firstMentionAuthor ? ` by @${stock.firstMentionAuthor}` : '';
+                                const fullText = `${time}${author}`;
+                                return fullText.length > 30 ? fullText.substring(0, 30) + '...' : fullText;
+                              })()}
+                            </div>
+                          </div>
+                          <div className="text-xs opacity-75">
+                            {stock.uniqueAuthors} unique author{stock.uniqueAuthors !== 1 ? 's' : ''}
+                          </div>
+                        </div>
+                        
+                        {/* Right Column (30%) - High of Day */}
+                        <div className="space-y-1 text-right">
+                          <div className="flex flex-col items-end">
+                            <span className="text-xs opacity-75">HOD</span>
+                            {hodData.has(stock.ticker.toUpperCase()) ? (
+                              <span className="text-sm font-bold text-white">
+                                ${hodData.get(stock.ticker.toUpperCase())?.toFixed(2)}
+                              </span>
+                            ) : (
+                              <span className="text-xs opacity-50">—</span>
+                            )}
+                          </div>
+                        </div>
                       </div>
                     </div>
                   )}

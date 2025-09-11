@@ -6,7 +6,6 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false }
 });
 
-// Note: Price extraction removed - prices should come from Databento API instead
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
@@ -74,9 +73,9 @@ export async function GET(request: Request) {
           ) FILTER (WHERE td.confidence_score >= 0.8) as sample_mentions,
           -- Check if mentioned by known traders
           BOOL_OR(a.is_trader) as mentioned_by_trader,
-          -- Get first mention details for price extraction
+          -- Get first mention timestamp and author for Databento API price lookup
           (
-            SELECT ROW(m2.content, a2.username)
+            SELECT ROW(m2.discord_timestamp, a2.username)
             FROM ticker_detections td2
             JOIN messages m2 ON td2.message_id = m2.id
             JOIN authors a2 ON m2.author_id = a2.id
@@ -127,22 +126,24 @@ export async function GET(request: Request) {
     
     // Format the response
     const stocks = result.rows.map(row => {
-      // Extract first mention author only (prices come from Databento API)
-      let firstMentionPrice = null; // Always null - prices handled by Databento API
+      // Extract first mention timestamp and author for Databento API lookup
+      let firstMentionTimestamp = null;
       let firstMentionAuthor = null;
       
       if (row.first_mention_details) {
-        // Parse the ROW(content, username) format from PostgreSQL
+        // Parse the ROW(timestamp, username) format from PostgreSQL
         const detailsStr = row.first_mention_details;
         
         // More robust parsing for PostgreSQL ROW format
         const match = detailsStr.match(/^\("([^"]*(?:""[^"]*)*)","([^"]*(?:""[^"]*)*)"\)$/);
         if (match) {
+          firstMentionTimestamp = match[1].replace(/""/g, '"'); // Unescape double quotes
           firstMentionAuthor = match[2].replace(/""/g, '"'); // Unescape double quotes
         } else {
           // Fallback for simpler format
           const simpleMatch = detailsStr.match(/^\(([^,]+),([^)]+)\)$/);
           if (simpleMatch) {
+            firstMentionTimestamp = simpleMatch[1].replace(/^"(.*)"$/, '$1');
             firstMentionAuthor = simpleMatch[2].replace(/^"(.*)"$/, '$1');
           }
         }
@@ -197,21 +198,74 @@ export async function GET(request: Request) {
         mentionedByTrader: row.mentioned_by_trader,
         isBlacklisted: row.is_blacklisted,
         blacklistReason: row.blacklist_reason,
-        firstMentionPrice: firstMentionPrice,
+        firstMentionPrice: null, // Will be populated by Databento API
         firstMentionAuthor: firstMentionAuthor,
+        firstMentionTimestamp: firstMentionTimestamp, // For Databento API lookup
         // Calculate momentum (mentions in last hour vs previous)
         momentum: calculateMomentum(row)
       };
     });
     
+    // Fetch first mention prices from Databento API (with concurrency control and timeout)
+    // Only fetch prices for top 20 stocks to avoid timeout
+    const stocksToProcess = stocks.slice(0, 20);
+    const remainingStocks = stocks.slice(20);
+    
+    const pricePromises = stocksToProcess.map(async (stock) => {
+      if (stock.firstMentionTimestamp) {
+        try {
+          // Convert PostgreSQL timestamp to ISO format for Databento API
+          // From: "2025-09-11 12:16:59.917 00" -> To: "2025-09-11T12:16:59.917Z"
+          let isoTimestamp = stock.firstMentionTimestamp;
+          if (isoTimestamp.includes(' ')) {
+            // Replace space with T and handle timezone
+            isoTimestamp = isoTimestamp.replace(' ', 'T');
+            if (isoTimestamp.endsWith(' 00')) {
+              isoTimestamp = isoTimestamp.replace(' 00', 'Z');
+            } else if (isoTimestamp.endsWith('+00')) {
+              isoTimestamp = isoTimestamp.replace('+00', 'Z');
+            }
+          }
+          
+          // Add timeout to individual requests
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), 5000); // 5 second timeout
+          
+          const response = await fetch(`http://localhost:3000/api/databento?symbol=${stock.ticker}&timestamp=${isoTimestamp}`, {
+            signal: controller.signal
+          });
+          clearTimeout(timeout);
+          
+          if (response.ok) {
+            const data = await response.json();
+            stock.firstMentionPrice = data.price;
+          }
+        } catch (error) {
+          if (error.name === 'AbortError') {
+            console.log(`Timeout fetching price for ${stock.ticker}`);
+          } else {
+            console.error(`Failed to fetch price for ${stock.ticker}:`, error);
+          }
+          // Keep firstMentionPrice as null if API call fails
+        }
+      }
+      return stock;
+    });
+    
+    // Wait for all price lookups to complete (with overall timeout)
+    const stocksWithPrices = await Promise.all(pricePromises);
+    
+    // Combine processed stocks with remaining stocks (which keep firstMentionPrice as null)
+    const allStocks = [...stocksWithPrices, ...remainingStocks];
+    
     return NextResponse.json({
-      stocks,
+      stocks: allStocks,
       meta: {
         dateRange,
         minConfidence,
         traders: traders.length > 0 ? traders : undefined,
         search,
-        totalCount: stocks.length,
+        totalCount: allStocks.length,
         timestamp: new Date().toISOString()
       }
     });

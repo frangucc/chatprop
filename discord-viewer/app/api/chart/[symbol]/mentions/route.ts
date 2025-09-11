@@ -22,7 +22,10 @@ export async function GET(
     console.log(`Fetching trader mentions for ${symbol} on ${date}`);
     
     // First, get all messages for this ticker from the messages API
-    const messagesUrl = `${request.nextUrl.origin}/api/messages-v2?ticker=${symbol}`;
+    const baseUrl = process.env.NODE_ENV === 'production' 
+      ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN || process.env.VERCEL_URL || request.headers.get('host')}` 
+      : request.nextUrl.origin;
+    const messagesUrl = `${baseUrl}/api/messages-v2?ticker=${symbol}`;
     console.log(`Calling messages API: ${messagesUrl}`);
     
     const messagesResponse = await fetch(messagesUrl, {
@@ -87,7 +90,7 @@ export async function GET(
       await Promise.all(batch.map(async (message) => {
         try {
           const isoTimestamp = new Date(message.timestamp).toISOString();
-          const priceUrl = `${request.nextUrl.origin}/api/databento?symbol=${symbol}&timestamp=${isoTimestamp}`;
+          const priceUrl = `${baseUrl}/api/databento?symbol=${symbol}&timestamp=${isoTimestamp}`;
           
           console.log(`Fetching price for message ${message.id} at ${isoTimestamp}`);
           
