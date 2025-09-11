@@ -28,6 +28,16 @@ interface Stock {
   momentum: string;
   firstMentionPrice: number | null;
   firstMentionAuthor: string | null;
+  surge?: {
+    mentions5min: number;
+    mentions15min: number;
+    mentions30min: number;
+    mentions1hr: number;
+    mentions4hr: number;
+    bestRate: number;
+    bestWindow: string;
+    hoursSinceLastMention: number;
+  };
   // Legacy fields for compatibility
   mention_count?: number;
   detection_confidence?: number;
@@ -228,7 +238,54 @@ export default function StocksPage() {
         if (dedupedData.length > 0) {
           (async () => {
             const ordered = dedupedData
-              .sort((a, b) => b.mentionCount - a.mentionCount)
+              .sort((a, b) => {
+                const aJuice = getStockJuiceLevel(a);
+                const bJuice = getStockJuiceLevel(b);
+                const aEnhanced = a.surge ? getEnhancedJuiceLevel(a.mentionCount, a.surge) : null;
+                const bEnhanced = b.surge ? getEnhancedJuiceLevel(b.mentionCount, b.surge) : null;
+                
+                // CRITICAL: Any juice (1+) always beats no juice (0), regardless of mention count or surge
+                if (aJuice > 0 && bJuice === 0) return -1; // a wins (has juice)
+                if (bJuice > 0 && aJuice === 0) return 1;  // b wins (has juice)
+                
+                // Both have juice: sort by juice level, then mentions per hour, then mention count
+                if (aJuice > 0 && bJuice > 0) {
+                  if (aJuice !== bJuice) return bJuice - aJuice;
+                  
+                  // Same juice level: prioritize higher mentions per hour
+                  const aMentionsPerHour = (a.surge?.mentions1hr || 0);
+                  const bMentionsPerHour = (b.surge?.mentions1hr || 0);
+                  if (aMentionsPerHour !== bMentionsPerHour) return bMentionsPerHour - aMentionsPerHour;
+                  
+                  return b.mentionCount - a.mentionCount;
+                }
+                
+                // Both have 0 juice: 👁️ (look/eyes) beats ❄️ (snowflakes)
+                if (aJuice === 0 && bJuice === 0) {
+                  const aIsSnowflake = aEnhanced?.isSnowflake || false;
+                  const bIsSnowflake = bEnhanced?.isSnowflake || false;
+                  const aIsLook = aEnhanced?.isLookIcon || false;
+                  const bIsLook = bEnhanced?.isLookIcon || false;
+                  
+                  // Look icons beat regular eyes, eyes beat snowflakes
+                  if (aIsLook && !bIsLook && !bIsSnowflake) return -1;  // look beats eyes
+                  if (bIsLook && !aIsLook && !aIsSnowflake) return 1;   // look beats eyes
+                  if (!aIsSnowflake && bIsSnowflake) return -1;        // eyes beat snowflakes
+                  if (aIsSnowflake && !bIsSnowflake) return 1;         // eyes beat snowflakes
+                  
+                  // Within same category, sort by mentions per hour, then mention count, then surge
+                  const aMentionsPerHour = (a.surge?.mentions1hr || 0);
+                  const bMentionsPerHour = (b.surge?.mentions1hr || 0);
+                  const aSurgeScore = aEnhanced?.surgeScore || 0;
+                  const bSurgeScore = bEnhanced?.surgeScore || 0;
+                  
+                  if (aMentionsPerHour !== bMentionsPerHour) return bMentionsPerHour - aMentionsPerHour;
+                  if (b.mentionCount !== a.mentionCount) return b.mentionCount - a.mentionCount;
+                  return bSurgeScore - aSurgeScore;
+                }
+                
+                return b.mentionCount - a.mentionCount; // Fallback
+              })
               .map(s => s.ticker.toUpperCase());
             console.log(`Fetching live prices for ${dedupedData.length} tickers (ordered by mentions):`);
             console.log(`Top 10: ${dedupedData.slice(0, 10).map(s => `${s.ticker}(${s.mentionCount})`).join(', ')}`);
@@ -323,7 +380,54 @@ export default function StocksPage() {
   // Auto refresh prices with prioritization for top tickers
   useEffect(() => {
     if (stocks.length === 0) return;
-    const sorted = [...stocks].sort((a, b) => b.mentionCount - a.mentionCount);
+    const sorted = [...stocks].sort((a, b) => {
+      const aJuice = getStockJuiceLevel(a);
+      const bJuice = getStockJuiceLevel(b);
+      const aEnhanced = a.surge ? getEnhancedJuiceLevel(a.mentionCount, a.surge) : null;
+      const bEnhanced = b.surge ? getEnhancedJuiceLevel(b.mentionCount, b.surge) : null;
+      
+      // CRITICAL: Any juice (1+) always beats no juice (0), regardless of mention count or surge
+      if (aJuice > 0 && bJuice === 0) return -1; // a wins (has juice)
+      if (bJuice > 0 && aJuice === 0) return 1;  // b wins (has juice)
+      
+      // Both have juice: sort by juice level, then mentions per hour, then mention count
+      if (aJuice > 0 && bJuice > 0) {
+        if (aJuice !== bJuice) return bJuice - aJuice;
+        
+        // Same juice level: prioritize higher mentions per hour
+        const aMentionsPerHour = (a.surge?.mentions1hr || 0);
+        const bMentionsPerHour = (b.surge?.mentions1hr || 0);
+        if (aMentionsPerHour !== bMentionsPerHour) return bMentionsPerHour - aMentionsPerHour;
+        
+        return b.mentionCount - a.mentionCount;
+      }
+      
+      // Both have 0 juice: 👁️ (look/eyes) beats ❄️ (snowflakes)
+      if (aJuice === 0 && bJuice === 0) {
+        const aIsSnowflake = aEnhanced?.isSnowflake || false;
+        const bIsSnowflake = bEnhanced?.isSnowflake || false;
+        const aIsLook = aEnhanced?.isLookIcon || false;
+        const bIsLook = bEnhanced?.isLookIcon || false;
+        
+        // Look icons beat regular eyes, eyes beat snowflakes
+        if (aIsLook && !bIsLook && !bIsSnowflake) return -1;  // look beats eyes
+        if (bIsLook && !aIsLook && !aIsSnowflake) return 1;   // look beats eyes
+        if (!aIsSnowflake && bIsSnowflake) return -1;        // eyes beat snowflakes
+        if (aIsSnowflake && !bIsSnowflake) return 1;         // eyes beat snowflakes
+        
+        // Within same category, sort by mentions per hour, then mention count, then surge
+        const aMentionsPerHour = (a.surge?.mentions1hr || 0);
+        const bMentionsPerHour = (b.surge?.mentions1hr || 0);
+        const aSurgeScore = aEnhanced?.surgeScore || 0;
+        const bSurgeScore = bEnhanced?.surgeScore || 0;
+        
+        if (aMentionsPerHour !== bMentionsPerHour) return bMentionsPerHour - aMentionsPerHour;
+        if (b.mentionCount !== a.mentionCount) return b.mentionCount - a.mentionCount;
+        return bSurgeScore - aSurgeScore;
+      }
+      
+      return b.mentionCount - a.mentionCount; // Fallback
+    });
     const baseSymbols = sorted.map(s => s.ticker.toUpperCase());
     
     // Separate into priority tiers
@@ -767,7 +871,61 @@ export default function StocksPage() {
     return tickerMatch && comboTickerMatch;
   });
 
-  // Color gradient based on mention count
+  // NEW: Enhanced color and icon system using new algorithm
+  const getEnhancedColorAndIcon = (mentionCount: number, surge: any) => {
+    const juiceLevel = surge ? getEnhancedJuiceLevel(mentionCount, surge) : { total: getHeatLevel(mentionCount), isLookIcon: false, isSnowflake: false };
+    
+    // Juice box levels (1-4) - Distinct colors with clear separation
+    if (juiceLevel.total === 4) return { 
+      color: 'bg-gradient-to-br from-red-600 to-pink-700', // Deep red/pink - HOTTEST (most distinct)
+      icon: 'juice', 
+      count: 4 
+    };
+    if (juiceLevel.total === 3) return { 
+      color: 'bg-gradient-to-br from-red-500 to-pink-600', // PFSA/OPEN magenta - 2nd tier  
+      icon: 'juice', 
+      count: 3 
+    };
+    if (juiceLevel.total === 2) return { 
+      color: 'bg-gradient-to-br from-orange-500 to-red-500', // Orange/red - 3rd tier (clearly different from 4-juice)
+      icon: 'juice', 
+      count: 2 
+    };
+    if (juiceLevel.total === 1) return { 
+      color: 'bg-gradient-to-br from-yellow-500 to-orange-500', // SLXN yellow/orange - 4th tier
+      icon: 'juice', 
+      count: 1 
+    };
+    
+    // 0 juice - NEW LOGIC: Check isSnowflake and isLookIcon from algorithm
+    
+    // Snowflake: <5 mentions + 2hrs inactive 
+    if (juiceLevel.isSnowflake) {
+      return { 
+        color: 'bg-gradient-to-br from-blue-600 to-blue-800', // Deeper blue for snowflakes
+        icon: 'snowflake', 
+        count: 0 
+      };
+    }
+    
+    // Look icon: 3+ mentions but 0 juice (due to recent inactivity)
+    if (juiceLevel.isLookIcon) {
+      return { 
+        color: 'bg-gradient-to-br from-[#08c0b1] to-[#0891b2]', // Turquoise for look/eyes
+        icon: 'eyes', 
+        count: 0 
+      };
+    }
+    
+    // Default eyes: Everything else with 0 juice
+    return { 
+      color: 'bg-gradient-to-br from-[#08c0b1] to-[#0891b2]', // Turquoise for eyes
+      icon: 'eyes', 
+      count: 0 
+    };
+  };
+
+  // Legacy function for backward compatibility
   const getCardColor = (mention_count: number) => {
     if (mention_count >= 20) return 'bg-gradient-to-br from-red-500 to-pink-600';
     if (mention_count >= 10) return 'bg-gradient-to-br from-orange-500 to-red-500';
@@ -775,6 +933,59 @@ export default function StocksPage() {
     return 'bg-gradient-to-br from-[#08c0b1] to-[#0891b2]';
   };
 
+  // NEW SIMPLIFIED JUICE BOX ALGORITHM
+  const getEnhancedJuiceLevel = (mentionCount: number, surge: any) => {
+    // 1. Base juice from total mentions (4-tier system)
+    let baseJuice = 0;
+    if (mentionCount >= 30) baseJuice = 4;      // NEW: 30+ mentions = 4 juice
+    else if (mentionCount >= 20) baseJuice = 3; // 20+ mentions = 3 juice
+    else if (mentionCount >= 10) baseJuice = 2; // 10+ mentions = 2 juice
+    else if (mentionCount >= 5) baseJuice = 1;  // 5+ mentions = 1 juice
+    
+    let currentJuice = baseJuice;
+    
+    // 2. Recent activity modifiers
+    const mentionsLastHour = surge.mentions1hr || 0;
+    const hoursSinceLastMention = surge.hoursSinceLastMention || 0;
+    
+    // +1 juice if 5+ mentions in last hour (max 4 total)
+    if (mentionsLastHour >= 5) {
+      currentJuice = Math.min(4, currentJuice + 1);
+    }
+    
+    // -1 juice if <2 mentions in last hour
+    if (mentionsLastHour < 2) {
+      currentJuice = Math.max(0, currentJuice - 1);
+    }
+    
+    // -1 more juice if no mentions in last 4 hours
+    if (hoursSinceLastMention >= 4) {
+      currentJuice = Math.max(0, currentJuice - 1);
+    }
+    
+    // 3. Guaranteed minimum: 10+ mentions always keep at least 1 juice
+    if (mentionCount >= 10) {
+      currentJuice = Math.max(1, currentJuice);
+    }
+    
+    // Calculate display properties
+    const isLookIcon = mentionCount >= 3 && currentJuice === 0; // 3+ mentions get look icon when no juice
+    const isSnowflake = mentionCount < 5 && hoursSinceLastMention > 2; // <5 mentions + 2hrs inactive = snowflake
+    
+    return {
+      total: currentJuice,
+      base: baseJuice,
+      surgeBonus: currentJuice - baseJuice, // Net change from modifiers
+      timePenalty: Math.max(0, baseJuice - currentJuice), // How much was lost
+      isSurging: currentJuice > baseJuice,
+      surgeScore: currentJuice, // For sorting
+      isLookIcon,
+      isSnowflake,
+      mentionsLastHour
+    };
+  };
+
+  // Legacy function for backward compatibility
   const getHeatLevel = (mention_count: number) => {
     if (mention_count >= 20) return 3;
     if (mention_count >= 10) return 2;
@@ -782,7 +993,39 @@ export default function StocksPage() {
     return 0;
   };
 
+  // Helper function to get juice level for any stock (for sorting)
+  const getStockJuiceLevel = (stock: any) => {
+    if (stock.surge) {
+      return getEnhancedJuiceLevel(stock.mentionCount, stock.surge).total;
+    } else {
+      return getHeatLevel(stock.mentionCount);
+    }
+  };
 
+
+
+  // Format surge display based on highest mention count in any window
+  const formatSurgeDisplay = (surge: any) => {
+    if (!surge) return null;
+    
+    // Find the window with the most mentions
+    const windows = {
+      '5min': { count: surge.mentions5min, label: '5m' },
+      '15min': { count: surge.mentions15min, label: '15m' },
+      '30min': { count: surge.mentions30min, label: '30m' },
+      '1hr': { count: surge.mentions1hr, label: '1hr' }
+    };
+    
+    // Get the window with highest mention count
+    const bestWindow = Object.entries(windows).reduce((best, [key, data]) => 
+      data.count > best.count ? { key, ...data } : best
+    , { key: '', count: 0, label: '' });
+    
+    // Only show if there are actual mentions (not 0)
+    if (bestWindow.count === 0) return null;
+    
+    return `${bestWindow.count}/${bestWindow.label}`;
+  };
 
   const getConfidenceColor = (confidence: number) => {
     return 'text-white';
@@ -1430,45 +1673,63 @@ export default function StocksPage() {
                   router.push(`/ticker/${stock.ticker}${queryString}`);
                 }}
               >
-                {/* Card Background with Gradient */}
-                <div className={`${getCardColor(stock.mentionCount)} p-6 text-white`}>
+                {/* Card Background with Enhanced Temperature Gradient */}
+                <div className={`${getEnhancedColorAndIcon(stock.mentionCount, stock.surge).color} p-6 text-white`}>
                   {/* Ticker Symbol with Heat Indicator */}
                   <div className="flex items-center mb-2">
                     <div className="text-3xl sm:text-4xl md:text-5xl font-black tracking-tight">
                       ${stock.ticker}
                     </div>
                     <div className="flex items-center -space-x-1 ml-auto mr-[-15px]">
-                      {getHeatLevel(stock.mentionCount) > 0 ? (
-                        // Fire cards: show juice box icons
-                        Array.from({ length: getHeatLevel(stock.mentionCount) }, (_, i) => (
-                          <Image
-                            key={i}
-                            src="/images/juice.png"
-                            alt="juice"
-                            width={32}
-                            height={32}
-                            className=""
-                          />
-                        ))
-                      ) : (
-                        // Blue cards: show look icon
-                        <Image
-                          src="/images/look.png"
-                          alt="look"
-                          width={32}
-                          height={32}
-                          className=""
-                        />
-                      )}
+                      {(() => {
+                        const enhancedInfo = getEnhancedColorAndIcon(stock.mentionCount, stock.surge);
+                        
+                        if (enhancedInfo.icon === 'juice' && enhancedInfo.count > 0) {
+                          // Show juice box icons
+                          return Array.from({ length: enhancedInfo.count }, (_, i) => (
+                            <Image
+                              key={i}
+                              src="/images/juice.png"
+                              alt="juice"
+                              width={32}
+                              height={32}
+                              className=""
+                            />
+                          ));
+                        } else if (enhancedInfo.icon === 'snowflake') {
+                          // Show snowflake emoji for ice cold tickers
+                          return (
+                            <span className="text-3xl">❄️</span>
+                          );
+                        } else {
+                          // Show eyes icon for watch-worthy tickers
+                          return (
+                            <Image
+                              src="/images/look.png"
+                              alt="eyes"
+                              width={32}
+                              height={32}
+                              className=""
+                            />
+                          );
+                        }
+                      })()}
                     </div>
                   </div>
                   
-                  {/* Mention Count */}
+                  {/* Mention Count and Surge */}
                   <div className="flex items-baseline gap-2 mb-4">
                     <span className="text-2xl sm:text-3xl font-bold">{stock.mentionCount}</span>
                     <span className="text-sm opacity-90">
                       mention{stock.mentionCount !== 1 ? 's' : ''}
                     </span>
+                    {stock.surge && formatSurgeDisplay(stock.surge) && (
+                      <>
+                        <span className="text-lg font-bold text-yellow-300">⚡</span>
+                        <span className="text-lg font-bold text-yellow-300">{formatSurgeDisplay(stock.surge)}</span>
+                        <span className="text-xs opacity-75">surge</span>
+                      </>
+                    )}
                   </div>
                   
                   {/* Live Price with manual refresh */}

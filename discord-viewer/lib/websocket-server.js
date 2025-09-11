@@ -86,6 +86,13 @@ class TickerWebSocketServer {
           COUNT(DISTINCT td.message_id) as mention_count,
           AVG(td.confidence_score) as detection_confidence,
           MIN(m.discord_timestamp) as first_mention_timestamp,
+          MAX(m.discord_timestamp) as last_mention_timestamp,
+          -- Surge metrics
+          COUNT(DISTINCT td.message_id) FILTER (WHERE m.discord_timestamp >= NOW() - INTERVAL '5 minutes') as mentions_5min,
+          COUNT(DISTINCT td.message_id) FILTER (WHERE m.discord_timestamp >= NOW() - INTERVAL '15 minutes') as mentions_15min,
+          COUNT(DISTINCT td.message_id) FILTER (WHERE m.discord_timestamp >= NOW() - INTERVAL '30 minutes') as mentions_30min,
+          COUNT(DISTINCT td.message_id) FILTER (WHERE m.discord_timestamp >= NOW() - INTERVAL '1 hour') as mentions_1hr,
+          COUNT(DISTINCT td.message_id) FILTER (WHERE m.discord_timestamp >= NOW() - INTERVAL '4 hours') as mentions_4hr,
           (
             SELECT a.username
             FROM ticker_detections td2
@@ -107,9 +114,51 @@ class TickerWebSocketServer {
         LIMIT 50
       `);
       
+      // Process results to include surge calculations
+      const processedData = result.rows.map(row => {
+        const mentions5min = parseInt(row.mentions_5min) || 0;
+        const mentions15min = parseInt(row.mentions_15min) || 0;
+        const mentions30min = parseInt(row.mentions_30min) || 0;
+        const mentions1hr = parseInt(row.mentions_1hr) || 0;
+        const mentions4hr = parseInt(row.mentions_4hr) || 0;
+        
+        // Calculate surge rates (mentions per minute for each window)
+        const surgeRates = {
+          '5min': mentions5min / 5,
+          '15min': mentions15min / 15,
+          '30min': mentions30min / 30,
+          '1hr': mentions1hr / 60
+        };
+        
+        // Find the best surge rate and its time window
+        const bestSurgeEntry = Object.entries(surgeRates).reduce((best, [window, rate]) => 
+          rate > best[1] ? [window, rate] : best
+        );
+        
+        const [bestWindow, bestSurgeRate] = bestSurgeEntry;
+        
+        // Calculate time since last mention in hours
+        const hoursSinceLastMention = row.last_mention_timestamp ? 
+          (Date.now() - new Date(row.last_mention_timestamp).getTime()) / (1000 * 60 * 60) : Infinity;
+
+        return {
+          ...row,
+          surge: {
+            mentions5min,
+            mentions15min, 
+            mentions30min,
+            mentions1hr,
+            mentions4hr,
+            bestRate: bestSurgeRate,
+            bestWindow: bestWindow,
+            hoursSinceLastMention
+          }
+        };
+      });
+
       const message = {
         type: 'initial_tickers',
-        data: result.rows
+        data: processedData
       };
       
       if (ws.readyState === WebSocket.OPEN) {
