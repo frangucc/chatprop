@@ -5,8 +5,8 @@ const RealTimeExtractorNotify = require('./real-time-extractor-notify');
 const TickerWebSocketServer = require('./lib/websocket-server');
 
 const dev = process.env.NODE_ENV !== 'production';
-const hostname = 'localhost';
-const port = 3000;
+const hostname = process.env.NODE_ENV === 'production' ? '0.0.0.0' : 'localhost';
+const port = process.env.PORT || 3000;
 
 const app = next({ dev });
 const handle = app.getRequestHandler();

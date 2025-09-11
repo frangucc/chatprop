@@ -58,7 +58,7 @@ export default function StocksPage() {
   const [dateRange, setDateRange] = useState('today'); // Add date range state
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false); // Mobile menu state
   const [isCollapsed, setIsCollapsed] = useState(false);
-  const [isDarkMode, setIsDarkMode] = useState(false); // Collapse state for desktop focus mode
+  const [isDarkMode, setIsDarkMode] = useState(true); // Default to dark mode
   const [searchFocused, setSearchFocused] = useState(false); // Search focus state
   const [comboSearch, setComboSearch] = useState(''); // Combined ticker/trader search
   const [searchResults, setSearchResults] = useState<{tickers: any[], traders: any[]}>({tickers: [], traders: []});
@@ -236,7 +236,7 @@ export default function StocksPage() {
             try {
               // Subscribe in small batches
               const symbolsArr = ordered;
-              const subBatch = 15;
+              const subBatch = 5; // Reduced from 15 to 5 symbols per batch
               const delay = (ms: number) => new Promise(res => setTimeout(res, ms));
               for (let i = 0; i < symbolsArr.length; i += subBatch) {
                 const batch = symbolsArr.slice(i, i + subBatch);
@@ -249,7 +249,7 @@ export default function StocksPage() {
               }
 
               // Initial price pull: prioritize smaller set for faster first paint
-              const prioritized = ordered.slice(0, 30);
+              const prioritized = ordered.slice(0, 10); // Reduced from 30 to 10
               const chunkedFetch = async (symbols: string[], chunkSize = 10, retry = 1) => {
                 const chunks: string[][] = [];
                 for (let i = 0; i < symbols.length; i += chunkSize) {
@@ -349,7 +349,7 @@ export default function StocksPage() {
     // Subscribe to all symbols first
     const subscribeToSymbols = async () => {
       try {
-        const batchSize = 15;
+        const batchSize = 5; // Reduced from 15 to 5
         const delay = (ms: number) => new Promise(res => setTimeout(res, ms));
         for (let i = 0; i < symbols.length; i += batchSize) {
           const batch = symbols.slice(i, i + batchSize);
@@ -607,9 +607,11 @@ export default function StocksPage() {
     const savedDateRange = localStorage.getItem('hasjuice-dateRange');
     const savedIsCollapsed = localStorage.getItem('hasjuice-isCollapsed');
     
-    // Set initial values from localStorage
+    // Set initial values from localStorage, default to dark mode
     if (savedDarkMode !== null) {
       setIsDarkMode(savedDarkMode === 'true');
+    } else {
+      setIsDarkMode(true); // Default to dark mode for new users
     }
     if (savedDateRange && ['today', 'week', 'month', 'all'].includes(savedDateRange)) {
       setDateRange(savedDateRange);

@@ -9,10 +9,11 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Body must be { symbols: string[] }' }, { status: 400 });
     }
 
-    const upstreamUrl = 'http://localhost:7878/subscribe';
+    const rustServiceUrl = process.env.RUST_SERVICE_URL || 'http://localhost:7878';
+    const upstreamUrl = `${rustServiceUrl}/subscribe`;
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 8000);
+    const timeout = setTimeout(() => controller.abort(), 30000);
 
     const res = await fetch(upstreamUrl, {
       method: 'POST',

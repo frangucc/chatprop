@@ -1,0 +1,11 @@
+[phases.setup]
+nixPkgs = ['nodejs', 'npm', 'curl']
+
+[phases.install]
+cmds = ['cd discord-viewer && npm ci']
+
+[phases.build] 
+cmds = ['cd discord-viewer && npm run build']
+
+[start]
+cmd = 'cd discord-viewer && npm start'

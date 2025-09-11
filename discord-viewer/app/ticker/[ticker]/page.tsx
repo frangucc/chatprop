@@ -49,7 +49,7 @@ export default function TickerChatsPage() {
   const [priceChangePercent, setPriceChangePercent] = useState<number | null>(null);
   const [firstMentionPrice, setFirstMentionPrice] = useState<string | null>(null);
   const [firstMentionAuthor, setFirstMentionAuthor] = useState<string | null>(null);
-  const [isDarkMode, setIsDarkMode] = useState(false);
+  const [isDarkMode, setIsDarkMode] = useState(true); // Default to dark mode
   const [mounted, setMounted] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [messagePrices, setMessagePrices] = useState<{[key: string]: any}>({});

@@ -1,0 +1,35 @@
+# Cron Worker Service
+FROM node:18-alpine
+
+# Install cron and dependencies
+RUN apk add --no-cache \
+    curl \
+    dcron \
+    ca-certificates \
+    git
+
+WORKDIR /app
+
+# Copy package files from discord-viewer
+COPY discord-viewer/package*.json ./
+RUN npm ci --only=production
+
+# Copy necessary scripts and files
+COPY discord-viewer/*.js ./
+COPY discord-viewer/lib ./lib/
+COPY export-today.sh ./
+COPY .discord-token ./
+
+# Make scripts executable
+RUN chmod +x export-today.sh
+
+# Create cron job file
+RUN echo "0 8 * * * cd /app && ./export-today.sh >> /var/log/export.log 2>&1" > /etc/crontabs/root
+RUN echo "15 8 * * * cd /app && node process-discord-export.js >> /var/log/process.log 2>&1" >> /etc/crontabs/root
+
+# Health check
+HEALTHCHECK --interval=60s --timeout=10s --start-period=30s --retries=3 \
+  CMD ps aux | grep crond || exit 1
+
+# Start cron daemon
+CMD ["crond", "-f"]

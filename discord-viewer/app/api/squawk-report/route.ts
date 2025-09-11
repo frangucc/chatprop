@@ -117,7 +117,8 @@ export async function POST(request: NextRequest) {
     // Fetch current price if available
     let currentPrice = null;
     try {
-      const priceResponse = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000'}/api/live/prices?symbols=${ticker.toUpperCase()}`);
+      const baseUrl = process.env.NEXT_PUBLIC_API_URL || (process.env.NODE_ENV === 'production' ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : 'http://localhost:3000');
+      const priceResponse = await fetch(`${baseUrl}/api/live/prices?symbols=${ticker.toUpperCase()}`);
       if (priceResponse.ok) {
         const priceData = await priceResponse.json();
         const tickerPrice = priceData.find((p: any) => p.symbol.toUpperCase() === ticker.toUpperCase());
@@ -137,7 +138,8 @@ export async function POST(request: NextRequest) {
       const dateStr = today.toISOString().split('T')[0]; // YYYY-MM-DD format
       
       // Try to fetch detailed price data from Databento/chart API
-      const chartResponse = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000'}/api/chart/${ticker.toUpperCase()}?timeframe=5m&date=${dateStr}`);
+      const baseUrl = process.env.NEXT_PUBLIC_API_URL || (process.env.NODE_ENV === 'production' ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : 'http://localhost:3000');
+      const chartResponse = await fetch(`${baseUrl}/api/chart/${ticker.toUpperCase()}?timeframe=5m&date=${dateStr}`);
       if (chartResponse.ok) {
         const chartData = await chartResponse.json();
         if (chartData.bars && chartData.bars.length > 0) {
@@ -256,7 +258,7 @@ THE HAS JUICE SQUAWK REPORT:`;
 
     // Generate report using Claude
     const completion = await anthropic.messages.create({
-      model: 'claude-3-5-sonnet-20241022',
+      model: 'claude-3-5-sonnet-20241210',
       max_tokens: 1000,
       messages: [
         {

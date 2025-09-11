@@ -2,7 +2,7 @@
 
 // Standalone ticker extraction service
 // Monitors the messages table and extracts tickers in real-time
-const TickerExtractorV3 = require('../discord-viewer/ticker-extractor-v3');
+const TickerExtractorV3 = require('./ticker-extractor-v3');
 const { Pool } = require('pg');
 require('dotenv').config({ path: '.env' });
 

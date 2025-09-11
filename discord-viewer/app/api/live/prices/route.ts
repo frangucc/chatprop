@@ -12,7 +12,8 @@ export async function GET(request: Request) {
     }
 
     // Forward as-is (already encoded by client). Double-encoding breaks comma separation.
-    const upstreamUrl = `http://localhost:7878/api/live/prices?symbols=${symbols}`;
+    const rustServiceUrl = process.env.RUST_SERVICE_URL || 'http://localhost:7878';
+    const upstreamUrl = `${rustServiceUrl}/api/live/prices?symbols=${symbols}`;
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 8000);
