@@ -34,7 +34,7 @@ app.prepare().then(async () => {
     }
   });
 
-  // Initialize WebSocket server for tickers
+  // Initialize WebSocket server for tickers and price updates
   wsServer = new TickerWebSocketServer(server, process.env.DATABASE2_URL);
 
   // Initialize real-time extractor with NOTIFY

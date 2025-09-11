@@ -320,12 +320,18 @@ export default function StocksPage() {
     }
   };
 
-  // Auto refresh prices every 2 seconds
+  // Auto refresh prices with prioritization for top tickers
   useEffect(() => {
     if (stocks.length === 0) return;
     const sorted = [...stocks].sort((a, b) => b.mentionCount - a.mentionCount);
     const baseSymbols = sorted.map(s => s.ticker.toUpperCase());
-    // Apply priority boosts (move boosted to front, de-dupe) then cap to 60
+    
+    // Separate into priority tiers
+    const topTier = baseSymbols.slice(0, 5);      // Top 5: every 1-2 seconds
+    const secondTier = baseSymbols.slice(5, 15);  // Next 10: every 3-4 seconds  
+    const thirdTier = baseSymbols.slice(15, 60);  // Next 45: every 5-8 seconds
+    
+    // Apply priority boosts (move boosted to front, de-dupe)
     const boosts = priorityBoostRef.current;
     const boostedFront: string[] = [];
     baseSymbols.forEach(sym => {
@@ -333,6 +339,7 @@ export default function StocksPage() {
     });
     const rest = baseSymbols.filter(sym => boostedFront.indexOf(sym) === -1);
     const symbols = [...boostedFront, ...rest];
+    
     // decrement boosts each cycle
     if (boosts.size > 0) {
       const toDelete: string[] = [];
@@ -342,6 +349,7 @@ export default function StocksPage() {
       });
       toDelete.forEach(sym => boosts.delete(sym));
     }
+    
     // Prioritize top 60 on each poll to surface most-mentioned first
     const prioritized = symbols.slice(0, 60);
     const query = prioritized.join(',');
@@ -368,99 +376,35 @@ export default function StocksPage() {
     
     subscribeToSymbols();
 
-    const fetchLoop = async () => {
-      try {
-        const symbolsArr = prioritized;
-        const chunkSize = 15;
-        const chunks: string[][] = [];
-        for (let i = 0; i < symbolsArr.length; i += chunkSize) {
-          chunks.push(symbolsArr.slice(i, i + chunkSize));
-        }
-        const delay = (ms: number) => new Promise(res => setTimeout(res, ms));
-        const aggregate: LivePrice[] = [];
-        for (let i = 0; i < chunks.length; i++) {
-          const chunk = chunks[i];
-          const qs = chunk.join(',');
-          try {
-            const res = await fetch(`/api/live/prices?symbols=${qs}`);
-            if (res.ok) {
-              const data: LivePrice[] = await res.json();
-              aggregate.push(...data);
-            } else {
-              console.warn(`[poll] chunk ${i + 1}/${chunks.length} failed:`, res.status);
-            }
-          } catch (e) {
-            console.warn(`poll chunk ${i + 1}/${chunks.length} error:`, e);
-          }
-          await delay(150);
-        }
-        // Merge into existing map so we don't drop unpolled symbols
-        const priceMap = new Map<string, { price: number; ts: number | null }>(livePrices);
-        let priceCount = 0;
-        // build maps and track null counts for backfill
-        const missingCounts = missingCountsRef.current;
-        const backfilling = backfillingRef.current;
-        const nowIso = new Date();
-        aggregate.forEach(p => {
-          if (p.price !== null) {
-            priceMap.set(p.symbol, { price: p.price as number, ts: p.ts_event_ns || null });
-            priceCount++;
-            // reset missing count on update
-            missingCounts.delete(p.symbol);
-          } else {
-            const curr = missingCounts.get(p.symbol) || 0;
-            const next = curr + 1;
-            missingCounts.set(p.symbol, next);
-            // Disabled historical backfill - only use live WebSocket data
-            // if (next >= 3 && !backfilling.has(p.symbol)) {
-            //   backfilling.add(p.symbol);
-            //   (async () => {
-            //     const offsetsMin = [0, -15, -60, -360, -1560]; // now, 15m, 60m, 6h, 26h
-            //     for (const off of offsetsMin) {
-            //       try {
-            //         const ts = new Date(Date.now() + off * 60 * 1000).toISOString();
-            //         const resp = await fetch('/api/live/ingest_hist', {
-            //           method: 'POST',
-            //           headers: { 'Content-Type': 'application/json' },
-            //           body: JSON.stringify({ symbols: [p.symbol], timestamp: ts })
-            //         });
-            //         if (resp.ok) {
-            //           break; // seeded; next poll should pick it up
-            //         }
-            //       } catch (_) {}
-            //     }
-            //     backfilling.delete(p.symbol);
-            //   })();
-            // }
-          }
-        });
-        // If manual refresh is active, clear spinner when ts changes
-        if (refreshing.size > 0 && refreshingInfo.size > 0) {
-          const toClear: string[] = [];
-          refreshingInfo.forEach((info, sym) => {
-            const latest = priceMap.get(sym)?.ts ?? null;
-            if (latest !== undefined && latest !== info.lastTs && refreshing.has(sym)) {
-              toClear.push(sym);
-            }
-          });
-          if (toClear.length > 0) {
-            setRefreshing(prev => { const n = new Set(prev); toClear.forEach(s => n.delete(s)); return n; });
-            setRefreshingInfo(prev => { const n = new Map(prev); toClear.forEach(s => n.delete(s)); return n; });
-          }
-        }
-        setLivePrices(priceMap);
-        if (priceCount > 0) {
-          console.log(`[poll] ${priceCount}/${aggregate.length} live prices`, Array.from(priceMap.entries()).slice(0, 3));
-        }
-      } catch (e) {
-        console.warn('poll prices error:', e);
+    // Set up tiered polling for priority tickers (supplement WebSocket)
+    const pollTop5 = setInterval(() => {
+      if (topTier.length > 0) {
+        fetch('/api/live/subscribe', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ symbols: topTier, priority: 'high' })
+        }).catch(() => {});
       }
-    };
+    }, 1500); // Every 1.5 seconds for top 5
 
-    // kick off immediately and then every 2s
-    fetchLoop();
-    const id = setInterval(fetchLoop, 2000);
-    return () => clearInterval(id);
+    const pollSecondTier = setInterval(() => {
+      if (secondTier.length > 0) {
+        fetch('/api/live/subscribe', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ symbols: secondTier, priority: 'medium' })
+        }).catch(() => {});
+      }
+    }, 3000); // Every 3 seconds for next 10
+
+    console.log(`[Prioritized Updates] Top 5: ${topTier.join(',')}`);
+    console.log(`[Prioritized Updates] Second tier: ${secondTier.join(',')}`);
+    console.log(`[WebSocket Mode] Subscribed to ${symbols.length} symbols - live prices will stream via WebSocket`);
+
+    return () => {
+      clearInterval(pollTop5);
+      clearInterval(pollSecondTier);
+    };
   }, [stocks]);
 
   // Update URL parameters
@@ -738,6 +682,57 @@ export default function StocksPage() {
           });
           setLastUpdate(new Date());
         }
+        
+        if (message.type === 'live_price') {
+          // Handle live price updates from Rust service
+          const priceData = message.data;
+          const symbol = priceData.symbol;
+          const price = typeof priceData.price === 'number' ? priceData.price : parseFloat(priceData.price);
+          // Handle timestamp from either 'timestamp' or 'ts_event_ns' field
+          const timestamp = priceData.timestamp || priceData.ts_event_ns || null;
+          
+          console.log(`[WebSocket] Raw message:`, message);
+          console.log(`[WebSocket] Processing price update: symbol=${symbol}, price=${price}, timestamp=${timestamp}`);
+          
+          setLivePrices(prevPrices => {
+            const newPrices = new Map(prevPrices);
+            const upperSymbol = symbol.toUpperCase();
+            const wasInMap = prevPrices.has(upperSymbol);
+            const oldPrice = wasInMap ? prevPrices.get(upperSymbol)?.price : null;
+            
+            newPrices.set(upperSymbol, { 
+              price: price, 
+              ts: timestamp 
+            });
+            
+            console.log(`[WebSocket] Updated ${upperSymbol}: ${oldPrice || '∅'} -> $${price} (was in map: ${wasInMap})`);
+            console.log(`[WebSocket] Current price map size: ${newPrices.size}`);
+            
+            return newPrices;
+          });
+          
+          // Clear manual refresh spinner if active for this symbol
+          const upperSymbol = symbol.toUpperCase();
+          setRefreshing(prev => {
+            if (prev.has(upperSymbol)) {
+              const next = new Set(prev);
+              next.delete(upperSymbol);
+              return next;
+            }
+            return prev;
+          });
+          
+          setRefreshingInfo(prev => {
+            if (prev.has(upperSymbol)) {
+              const next = new Map(prev);
+              next.delete(upperSymbol);
+              return next;
+            }
+            return prev;
+          });
+          
+          setLastUpdate(new Date());
+        }
       } catch (error) {
         console.error('Error parsing WebSocket message:', error);
       }
@@ -944,24 +939,24 @@ export default function StocksPage() {
   return (
     <div className={`min-h-screen py-8 ${isDarkMode ? 'bg-[#17191c]' : 'bg-gray-50'}`}>
       <div className={`mx-auto px-4 sm:px-6 lg:px-8 ${isCollapsed ? 'max-w-none' : 'max-w-7xl'}`}>
-        {/* Status Bar - Above Header */}
-        <div className={`mb-4 ${isCollapsed ? 'hidden sm:hidden' : ''}`}>
+        {/* Status Bar - Above Header (Desktop Only) */}
+        <div className={`mb-4 hidden sm:block ${isCollapsed ? 'hidden sm:hidden' : ''}`}>
           <div className="flex justify-end items-center gap-3">
             <div className="flex items-center gap-2 text-sm">
               <div className={`w-3 h-3 rounded-full ${connected ? 'bg-green-400' : 'bg-red-400'}`}></div>
-              <span className={`text-sm hidden sm:block ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+              <span className={`text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
                 {connected ? 'Connected' : 'Disconnected'}
               </span>
             </div>
             {mounted && lastUpdate && (
-              <div className={`text-sm hidden sm:block ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+              <div className={`text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
                 Last update: {format(lastUpdate, 'HH:mm:ss')}
               </div>
             )}
             {/* Dark Mode Toggle */}
             <button
               onClick={() => toggleDarkMode(!isDarkMode)}
-              className={`p-2 rounded-lg transition-colors hidden sm:block ${isDarkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-100'}`}
+              className={`p-2 rounded-lg transition-colors ${isDarkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-100'}`}
               aria-label="Toggle dark mode"
             >
               {isDarkMode ? (
@@ -972,7 +967,7 @@ export default function StocksPage() {
             </button>
             {/* Expand/Collapse Toggle */}
             <button
-              className={`p-2 rounded-lg transition-colors hidden sm:block ${isDarkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-100'}`}
+              className={`p-2 rounded-lg transition-colors ${isDarkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-100'}`}
               onClick={() => toggleExpand(!isCollapsed)}
               aria-label={isCollapsed ? 'Expand view' : 'Collapse view'}
             >
@@ -1174,6 +1169,36 @@ export default function StocksPage() {
                   </button>
                 </div>
                 
+                {/* Status Information (Mobile Only) */}
+                <div className="mb-6 pt-4 border-t border-gray-600">
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center gap-2">
+                      <div className={`w-3 h-3 rounded-full ${connected ? 'bg-green-400' : 'bg-red-400'}`}></div>
+                      <span className={`text-sm ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                        {connected ? 'Connected' : 'Disconnected'}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {/* Dark Mode Toggle for Mobile */}
+                      <button
+                        onClick={() => toggleDarkMode(!isDarkMode)}
+                        className={`p-1.5 rounded-md transition-colors ${isDarkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-200'}`}
+                        aria-label="Toggle dark mode"
+                      >
+                        {isDarkMode ? (
+                          <FaSun className="w-4 h-4 text-yellow-400" />
+                        ) : (
+                          <FaMoon className="w-4 h-4 text-gray-600" />
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                  {mounted && lastUpdate && (
+                    <div className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                      Last update: {format(lastUpdate, 'HH:mm:ss')}
+                    </div>
+                  )}
+                </div>
                 
                 {/* Date Range */}
                 <div className="mb-6">
@@ -1460,7 +1485,10 @@ export default function StocksPage() {
                           {(() => {
                             const entry = livePrices.get(stock.ticker.toUpperCase())!;
                             if (!entry.ts) return '';
-                            const secs = Math.max(0, Math.floor((Date.now() - entry.ts / 1_000_000) / 1000));
+                            // entry.ts could be in nanoseconds or milliseconds depending on source
+                            // Check if timestamp looks like nanoseconds (> 1e15) and convert accordingly
+                            const timestampMs = entry.ts > 1e15 ? entry.ts / 1_000_000 : entry.ts;
+                            const secs = Math.max(0, Math.floor((nowTick - timestampMs) / 1000));
                             return `${secs}s ago`;
                           })()}
                         </span>

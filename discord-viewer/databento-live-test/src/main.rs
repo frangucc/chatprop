@@ -14,13 +14,16 @@ use axum::{
 };
 use http::StatusCode;
 use serde::{Deserialize, Serialize};
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, mpsc};
 use tower_http::cors::{Any, CorsLayer};
 use tracing::{info, warn, error};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use reqwest::header::{AUTHORIZATION, ACCEPT};
 use base64::Engine as _;
 use chrono::{DateTime, Utc, Duration as ChronoDuration};
+use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
+use futures_util::stream::StreamExt;
+use futures_util::SinkExt;
 // Databento live client
 use databento::{live::Subscription, LiveClient};
 use databento::dbn::{Schema, SType, TradeMsg};
@@ -31,11 +34,21 @@ struct LastPrice {
     ts_event_ns: Option<u64>,
 }
 
+#[derive(Clone, Debug, Serialize)]
+struct PriceUpdate {
+    symbol: String,
+    price: f64,
+    timestamp: u64,
+}
+
 #[derive(Clone)]
 struct AppState {
     prices: std::sync::Arc<RwLock<HashMap<String, LastPrice>>>,
     live_client: std::sync::Arc<RwLock<Option<databento::LiveClient>>>,
     subscribed_symbols: std::sync::Arc<RwLock<HashSet<String>>>,
+    symbol_mapping: std::sync::Arc<RwLock<HashMap<u32, String>>>, // instrument_id -> symbol
+    price_sender: mpsc::UnboundedSender<PriceUpdate>,
+    client_sender: mpsc::UnboundedSender<Vec<String>>, // Channel to send new symbols to the single client task
 }
 
 #[derive(Debug, Deserialize)]
@@ -61,19 +74,34 @@ fn norm_symbol(s: &str) -> String { s.trim().to_uppercase() }
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<()> {
     
-    // Initialize state with prices from the live feed once ready.
+    // Create channels for price broadcasting and client communication
+    let (price_sender, price_receiver) = mpsc::unbounded_channel::<PriceUpdate>();
+    let (client_sender, client_receiver) = mpsc::unbounded_channel::<Vec<String>>();
+    
+    // Initialize state
     let state = AppState {
         prices: std::sync::Arc::new(RwLock::new(HashMap::new())),
         live_client: std::sync::Arc::new(RwLock::new(None)),
         subscribed_symbols: std::sync::Arc::new(RwLock::new(HashSet::new())),
+        symbol_mapping: std::sync::Arc::new(RwLock::new(HashMap::new())),
+        price_sender,
+        client_sender,
     };
-
-    // logging
+    
+    // Initialize logging FIRST
     tracing_subscriber::registry()
         .with(tracing_subscriber::EnvFilter::try_from_default_env()
             .unwrap_or_else(|_| "info,tower_http=info".into()))
         .with(tracing_subscriber::fmt::layer())
         .init();
+
+    // Start single Databento client manager
+    let state_clone = state.clone();
+    tokio::spawn(databento_client_manager(state_clone, client_receiver));
+    
+    // Start WebSocket broadcaster to Node.js server
+    let websocket_url = std::env::var("NODEJS_WS_URL").unwrap_or_else(|_| "ws://localhost:3000/ws".to_string());
+    tokio::spawn(start_websocket_broadcaster(websocket_url, price_receiver));
 
     // CORS to allow Next.js dev origin
     let cors = CorsLayer::new()
@@ -349,8 +377,8 @@ fn current_time_ns() -> u64 {
 }
 
 async fn start_live_subscription(
-    api_key: String,
-    dataset: String,
+    _api_key: String,
+    _dataset: String,
     symbols: Vec<String>,
     state: AppState
 ) -> Result<Vec<String>> {
@@ -358,89 +386,242 @@ async fn start_live_subscription(
         return Ok(vec![]);
     }
 
-    let mut client = LiveClient::builder()
-        .key(&api_key)?
-        .dataset(&dataset)
-        .build()
-        .await?;
+    // Send symbols to the single client manager instead of creating new connections
+    if let Err(e) = state.client_sender.send(symbols.clone()) {
+        error!("Failed to send symbols to client manager: {}", e);
+        return Err(anyhow::anyhow!("Client manager communication failed"));
+    }
 
-    // Subscribe one symbol at a time to avoid a single bad ticker blocking the batch
-    let mut subscribed_symbols: Vec<String> = Vec::new();
-    for sym in symbols.iter() {
-        let sub_one = Subscription::builder()
-            .schema(Schema::Trades)
-            .stype_in(SType::RawSymbol)
-            .symbols(vec![sym.clone()])
-            .build();
-        match tokio::time::timeout(std::time::Duration::from_secs(3), client.subscribe(&sub_one)).await {
-            Ok(Ok(_)) => {
-                info!(symbol = %sym, "Subscribed to symbol");
-                subscribed_symbols.push(sym.clone());
-            }
-            Ok(Err(e)) => {
-                warn!(symbol = %sym, error = %e, "Subscription failed; skipping");
-            }
-            Err(_) => {
-                warn!(symbol = %sym, "Subscription timed out; skipping");
-            }
+    // Mark symbols as subscribed immediately (the client manager will handle actual subscription)
+    {
+        let mut subscribed = state.subscribed_symbols.write().await;
+        for sym in &symbols {
+            subscribed.insert(sym.clone());
         }
     }
 
-    if subscribed_symbols.is_empty() {
-        warn!("No symbols subscribed; not starting client");
-        return Ok(vec![]);
-    }
+    info!("Requested subscription for symbols: {:?}", symbols);
+    Ok(symbols)
+}
 
-    client.start().await?;
-    info!(symbols = ?subscribed_symbols, %dataset, "Live trades subscriber connected");
-
-    tokio::spawn(async move {
-        let mut trade_count = 0;
-        let mut instrument_to_symbol: std::collections::HashMap<u32, String> = std::collections::HashMap::new();
-        
-        while let Ok(Some(rec)) = client.next_record().await {
-            // Handle symbol mapping messages
-            if let Some(mapping) = rec.get::<databento::dbn::SymbolMappingMsg>() {
-                let raw_symbol = unsafe {
-                    std::ffi::CStr::from_ptr(mapping.stype_out_symbol.as_ptr() as *const i8)
-                        .to_string_lossy()
-                        .into_owned()
-                };
-                info!("Symbol mapping received: instrument_id={} -> symbol={}", mapping.hd.instrument_id, raw_symbol);
-                instrument_to_symbol.insert(mapping.hd.instrument_id, raw_symbol);
+// Single Databento client manager that handles all subscriptions
+async fn databento_client_manager(
+    state: AppState,
+    mut symbol_receiver: mpsc::UnboundedReceiver<Vec<String>>
+) {
+    let api_key = match std::env::var("DATABENTO_API_KEY") {
+        Ok(key) => key,
+        Err(_) => {
+            error!("DATABENTO_API_KEY not set for client manager");
+            return;
+        }
+    };
+    
+    let dataset = std::env::var("DATABENTO_DATASET").unwrap_or("EQUS.MINI".to_string());
+    info!("Starting Databento client manager with dataset: {}", dataset);
+    
+    let mut client = match LiveClient::builder()
+        .key(&api_key)
+        .unwrap()
+        .dataset(&dataset)
+        .build()
+        .await
+    {
+        Ok(c) => c,
+        Err(e) => {
+            error!("Failed to create Databento client: {}", e);
+            return;
+        }
+    };
+    
+    let mut subscribed_instruments: HashSet<String> = HashSet::new();
+    let mut client_started = false;
+    
+    loop {
+        tokio::select! {
+            // Handle new symbol subscription requests
+            symbols_opt = symbol_receiver.recv() => {
+                if let Some(symbols) = symbols_opt {
+                    info!("Client manager received subscription request for: {:?}", symbols);
+                    
+                    // Filter to new symbols only
+                    let mut new_symbols = Vec::new();
+                    for sym in symbols {
+                        if !subscribed_instruments.contains(&sym) {
+                            new_symbols.push(sym.clone());
+                            subscribed_instruments.insert(sym);
+                        }
+                    }
+                    
+                    if !new_symbols.is_empty() {
+                        info!("Subscribing to new symbols: {:?}", new_symbols);
+                        
+                        // Create subscription for all new symbols at once
+                        let subscription = Subscription::builder()
+                            .schema(Schema::Trades)
+                            .stype_in(SType::RawSymbol)
+                            .symbols(new_symbols.clone())
+                            .build();
+                            
+                        match client.subscribe(&subscription).await {
+                            Ok(_) => {
+                                info!("Successfully subscribed to {} symbols", new_symbols.len());
+                                
+                                // Start the client if this is the first subscription
+                                if !client_started {
+                                    match client.start().await {
+                                        Ok(_) => {
+                                            info!("Databento client started");
+                                            client_started = true;
+                                        }
+                                        Err(e) => {
+                                            error!("Failed to start Databento client: {}", e);
+                                            // Remove symbols from subscribed set since start failed
+                                            for sym in &new_symbols {
+                                                subscribed_instruments.remove(sym);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                error!("Failed to subscribe to symbols {:?}: {}", new_symbols, e);
+                                // Remove symbols from subscribed set since subscription failed
+                                for sym in &new_symbols {
+                                    subscribed_instruments.remove(sym);
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    warn!("Symbol receiver channel closed");
+                    break;
+                }
             }
             
-            // Handle trade messages
-            if let Some(trade) = rec.get::<TradeMsg>() {
-                let px = trade.price as f64 / 1_000_000_000.0;
-                let inst = trade.hd.instrument_id;
-                let size = trade.size;
-                
-                // Log every trade we receive
-                trade_count += 1;
-                let symbol_name = instrument_to_symbol.get(&inst)
-                    .map(|s| s.as_str())
-                    .unwrap_or("UNKNOWN");
-                    
-                info!(
-                    "Live trade #{}: instrument_id={} ({}), price=${:.4}, size={}", 
-                    trade_count, inst, symbol_name, px, size
-                );
-                
-                let mut map = state.prices.write().await;
-                
-                // Store by instrument_id
-                let inst_key = format!("INST:{}", inst);
-                map.insert(inst_key, LastPrice { price: Some(px), ts_event_ns: Some(trade.hd.ts_event) });
-                
-                // Store by symbol name if we have the mapping
-                if let Some(symbol) = instrument_to_symbol.get(&inst) {
-                    map.insert(symbol.clone(), LastPrice { price: Some(px), ts_event_ns: Some(trade.hd.ts_event) });
+            // Handle incoming trade data (only if client is started)
+            rec_result = client.next_record(), if client_started => {
+                match rec_result {
+                    Ok(Some(rec)) => {
+                        // Handle symbol mapping messages
+                        if let Some(mapping) = rec.get::<databento::dbn::SymbolMappingMsg>() {
+                            let raw_symbol = unsafe {
+                                std::ffi::CStr::from_ptr(mapping.stype_out_symbol.as_ptr() as *const i8)
+                                    .to_string_lossy()
+                                    .into_owned()
+                            };
+                            info!("Symbol mapping: instrument_id={} -> symbol={}", mapping.hd.instrument_id, raw_symbol);
+                            
+                            // Store the mapping
+                            {
+                                let mut mappings = state.symbol_mapping.write().await;
+                                mappings.insert(mapping.hd.instrument_id, raw_symbol.clone());
+                            }
+                        }
+                        
+                        // Handle trade messages
+                        if let Some(trade) = rec.get::<TradeMsg>() {
+                            let px = trade.price as f64 / 1_000_000_000.0;
+                            let inst = trade.hd.instrument_id;
+                            
+                            // Get the actual symbol from the mapping
+                            let symbol = {
+                                let mappings = state.symbol_mapping.read().await;
+                                mappings.get(&inst).cloned().unwrap_or_else(|| format!("INST:{}", inst))
+                            };
+                            
+                            info!("Live trade: instrument_id={}, symbol={}, price=${:.4}", inst, symbol, px);
+                            
+                            // Store price data with actual symbol
+                            {
+                                let mut map = state.prices.write().await;
+                                map.insert(symbol.clone(), LastPrice { price: Some(px), ts_event_ns: Some(trade.hd.ts_event) });
+                            }
+                            
+                            // Send price update via WebSocket with actual symbol
+                            let price_update = PriceUpdate {
+                                symbol: symbol,
+                                price: px,
+                                timestamp: trade.hd.ts_event,
+                            };
+                            
+                            if let Err(e) = state.price_sender.send(price_update) {
+                                warn!("Failed to send price update: {}", e);
+                            }
+                        }
+                    }
+                    Ok(None) => {
+                        info!("Databento stream ended");
+                        client_started = false;
+                        break;
+                    }
+                    Err(e) => {
+                        error!("Databento client error: {}", e);
+                        client_started = false;
+                        // Try to reconnect after a delay
+                        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                        break;
+                    }
                 }
             }
         }
-        info!("Live trades stream ended");
-    });
+    }
+    
+    info!("Databento client manager stopped");
+}
 
-    Ok(subscribed_symbols)
+async fn start_websocket_broadcaster(url: String, mut price_receiver: mpsc::UnboundedReceiver<PriceUpdate>) {
+    loop {
+        info!("Attempting to connect to WebSocket at {}", url);
+        match connect_async(&url).await {
+            Ok((ws_stream, _)) => {
+                info!("Connected to WebSocket server");
+                let (mut ws_sender, mut ws_receiver) = ws_stream.split();
+                
+                // Send price updates via WebSocket
+                loop {
+                    tokio::select! {
+                        price_update = price_receiver.recv() => {
+                            if let Some(update) = price_update {
+                                let msg = Message::Text(serde_json::to_string(&update).unwrap());
+                                if let Err(e) = ws_sender.send(msg).await {
+                                    error!("Failed to send price update: {}", e);
+                                    break;
+                                }
+                                info!("Broadcasted price: {} @ ${:.4}", update.symbol, update.price);
+                            } else {
+                                warn!("Price receiver channel closed");
+                                break;
+                            }
+                        }
+                        ws_msg = ws_receiver.next() => {
+                            if let Some(msg) = ws_msg {
+                                match msg {
+                                    Ok(Message::Close(_)) => {
+                                        info!("WebSocket connection closed by server");
+                                        break;
+                                    }
+                                    Err(e) => {
+                                        error!("WebSocket error: {}", e);
+                                        break;
+                                    }
+                                    _ => {} // Ignore other message types
+                                }
+                            } else {
+                                info!("WebSocket stream ended");
+                                break;
+                            }
+                        }
+                    }
+                }
+                
+                info!("WebSocket connection lost, will reconnect in 5 seconds");
+                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+            }
+            Err(e) => {
+                error!("Failed to connect to WebSocket: {}. Retrying in 10 seconds", e);
+                tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+            }
+        }
+    }
 }

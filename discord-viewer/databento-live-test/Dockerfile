@@ -2,8 +2,10 @@ FROM rust:1.82 as builder
 
 WORKDIR /app
 
-# Copy source code
-COPY . ./
+# Copy only the Rust project files
+COPY discord-viewer/databento-live-test/Cargo.toml ./
+COPY discord-viewer/databento-live-test/Cargo.lock ./
+COPY discord-viewer/databento-live-test/src ./src
 
 # Update Cargo.lock to match this Cargo version
 RUN cargo update

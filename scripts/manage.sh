@@ -3,9 +3,10 @@ set -euo pipefail
 
 # ChatProp management script
 # Usage:
-#   scripts/manage.sh start   # export today, catch up processing, start servers
-#   scripts/manage.sh stop    # stop all servers
-#   scripts/manage.sh status  # show status of servers and latest exports
+#   scripts/manage.sh start        # export today, catch up processing, start servers
+#   scripts/manage.sh start-webonly # start only web app and rust server (no monitor/extraction)
+#   scripts/manage.sh stop         # stop all servers
+#   scripts/manage.sh status       # show status of servers and latest exports
 
 ROOT_DIR="/Users/franckjones/chatprop"
 EXPORT_DIR="$ROOT_DIR/exports"
@@ -109,6 +110,13 @@ start_servers() {
     echo "pm2 not found; please install pm2 (npm i -g pm2)"
   fi
 
+  start_web_servers
+  pm2_safe save || true
+}
+
+start_web_servers() {
+  echo "==> Starting web servers only"
+  
   # Start Next.js dev via PM2 if not already listening
   if port_listening 3000; then
     echo "Port 3000 already in use; skipping Next.js dev start"
@@ -132,15 +140,18 @@ start_servers() {
       (cd "$RUST_DIR" && nohup cargo run >/tmp/rust-live-server.log 2>&1 & echo "Started Rust server via nohup (fallback)")
     fi
   fi
-
-  pm2_safe save || true
 }
 
 stop_servers() {
-  echo "==> Stopping servers"
+  echo "==> Stopping all servers"
   # Stop known PM2 apps if present
   pm2_safe delete discord-monitor || true
   pm2_safe delete ticker-extractor || true
+  stop_web_servers_only
+}
+
+stop_web_servers_only() {
+  echo "==> Stopping web servers only"
   pm2_safe delete discord-viewer-dev || true
   pm2_safe delete databento-live-server || true
 
@@ -176,8 +187,25 @@ is_running() {
   pm2_safe list 2>/dev/null | grep -E "(discord-monitor|ticker-extractor|discord-viewer-dev|databento-live-server)" | grep -q "online"
 }
 
+is_web_only_running() {
+  # Check if web services are running
+  pm2_safe list 2>/dev/null | grep -E "(discord-viewer-dev|databento-live-server)" | grep -q "online"
+}
+
+is_monitor_running() {
+  # Check if monitor/extraction services are running
+  pm2_safe list 2>/dev/null | grep -E "(discord-monitor|ticker-extractor)" | grep -q "online"
+}
+
 main() {
   local cmd="${1:-status}"
+  local flag="${2:-}"
+  
+  # Handle flag syntax: "start -webonly" -> "start-webonly"
+  if [[ "$cmd" == "start" && "$flag" == "-webonly" ]]; then
+    cmd="start-webonly"
+  fi
+  
   case "$cmd" in
     start)
       if is_running; then
@@ -195,19 +223,42 @@ main() {
       start_servers
       echo "==> All services started! Web UI: http://localhost:3000"
       ;;
+    start-webonly)
+      if is_web_only_running; then
+        echo "==> Web services are running. Performing restart..."
+        stop_web_servers_only
+        echo "==> Waiting for cleanup..."
+        sleep 2
+        echo "==> Starting web services only..."
+      else
+        echo "==> Web services are stopped. Starting web servers only..."
+      fi
+      ensure_dirs
+      start_web_servers
+      pm2_safe save || true
+      echo "==> Web services started! Web UI: http://localhost:3000"
+      echo "==> NOTE: Monitor and extraction services NOT started (webonly mode)"
+      ;;
     start-lite)
       # Start only the servers, skip exports and catch-up processing
       ensure_dirs
       start_servers
       ;;
     stop)
-      stop_servers
+      # Smart stop: if only web services are running, stop only those
+      if is_web_only_running && ! is_monitor_running; then
+        echo "==> Only web services detected, stopping web services only"
+        stop_web_servers_only
+      else
+        echo "==> Stopping all services"
+        stop_servers
+      fi
       ;;
     status)
       show_status
       ;;
     *)
-      echo "Usage: $0 {start|start-lite|stop|status}" >&2
+      echo "Usage: $0 {start|start-webonly|start -webonly|start-lite|stop|status}" >&2
       exit 1
       ;;
   esac

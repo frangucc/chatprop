@@ -41,14 +41,19 @@ export default function TraderFilter({
     }
 
     try {
+      console.log('[TraderFilter] Searching for:', query);
       const response = await fetch(`/api/users/search?q=${encodeURIComponent(query)}`);
       if (response.ok) {
-        const users = await response.json();
+        const data = await response.json();
+        const users = data.users || data; // Handle both response formats
+        console.log('[TraderFilter] Found users:', users.length, users);
         setSearchResults(users);
         setShowDropdown(true);
+      } else {
+        console.error('[TraderFilter] Search failed:', response.status, response.statusText);
       }
     } catch (error) {
-      console.error('Error searching traders:', error);
+      console.error('[TraderFilter] Error searching traders:', error);
     }
   };
 
@@ -79,10 +84,15 @@ export default function TraderFilter({
   // Handle Enter key in trader search
   const handleTraderSearchKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && searchResults.length > 0) {
+      e.preventDefault();
       addTrader(searchResults[0]);
     } else if (e.key === 'Escape') {
       setShowDropdown(false);
       setTraderSearch('');
+    } else if (e.key === 'ArrowDown' && searchResults.length > 0) {
+      e.preventDefault();
+      // Focus could be improved here, but for now just ensure dropdown is visible
+      setShowDropdown(true);
     }
   };
 
@@ -102,24 +112,36 @@ export default function TraderFilter({
   return (
     <div className={`trader-filter-container space-y-3 ${className}`}>
       {/* Search Input */}
-      <div className="relative" style={{ zIndex: 1000 }}>
-        <input
-          type="text"
-          placeholder={placeholder}
-          value={traderSearch}
-          onChange={handleTraderSearchChange}
-          onKeyDown={handleTraderSearchKeyDown}
-          onFocus={() => traderSearch.length >= 2 && setShowDropdown(true)}
-          className={`w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent ${isDarkMode ? 'bg-gray-700 border-gray-600 text-white placeholder-gray-400' : 'bg-white border-gray-300 text-gray-900'}`}
-        />
+      <div className="relative" style={{ zIndex: 10 }}>
+        <div className="relative">
+          <input
+            type="text"
+            placeholder={placeholder}
+            value={traderSearch}
+            onChange={handleTraderSearchChange}
+            onKeyDown={handleTraderSearchKeyDown}
+            onFocus={() => traderSearch.length >= 2 && setShowDropdown(true)}
+            className={`w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent ${isDarkMode ? 'bg-gray-700 border-gray-600 text-white placeholder-gray-400' : 'bg-white border-gray-300 text-gray-900'}`}
+          />
+          {traderSearch.length >= 2 && searchResults.length === 0 && showDropdown && (
+            <div className={`absolute w-full mt-1 p-3 border rounded-lg shadow-lg ${isDarkMode ? 'bg-gray-800 border-gray-600 text-gray-400' : 'bg-white border-gray-200 text-gray-500'}`}
+                 style={{ zIndex: 10, top: '100%' }}>
+              <div className="text-sm">No traders found matching "{traderSearch}"</div>
+            </div>
+          )}
+        </div>
         
         {/* Search Dropdown */}
+        {(() => {
+          console.log('[TraderFilter] Dropdown state - showDropdown:', showDropdown, 'searchResults:', searchResults.length);
+          return null;
+        })()}
         {showDropdown && searchResults.length > 0 && (
           <div 
-            className={`absolute w-full mt-1 border rounded-lg shadow-2xl max-h-60 overflow-y-auto ${isDarkMode ? 'bg-gray-800 border-gray-600' : 'bg-white border-gray-200'}`} 
+            className={`absolute w-full mt-1 border-2 rounded-lg shadow-2xl max-h-60 overflow-y-auto ${isDarkMode ? 'bg-gray-800 border-blue-500' : 'bg-white border-blue-400'}`} 
             style={{
               position: 'absolute',
-              zIndex: 2147483647,
+              zIndex: 10,
               top: '100%',
               left: 0,
               right: 0

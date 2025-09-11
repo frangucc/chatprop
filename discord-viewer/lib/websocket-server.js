@@ -4,6 +4,7 @@ const { Pool } = require('pg');
 class TickerWebSocketServer {
   constructor(server, databaseUrl) {
     this.clients = new Set();
+    this.priceData = new Map(); // Store latest prices from Rust service
     this.pool = new Pool({
       connectionString: databaseUrl,
       ssl: { rejectUnauthorized: false }
@@ -21,12 +22,24 @@ class TickerWebSocketServer {
   }
 
   setupWebSocket() {
-    this.wss.on('connection', (ws) => {
-      console.log('Client connected to ticker WebSocket');
+    this.wss.on('connection', (ws, req) => {
+      console.log('Client connected to ticker WebSocket from:', req.socket.remoteAddress);
       this.clients.add(ws);
       
-      // Send current tickers on connection
-      this.sendCurrentTickers(ws);
+      // Send current tickers on connection (only for frontend clients, not Rust service)
+      if (req.headers['user-agent'] && !req.headers['user-agent'].includes('tokio')) {
+        this.sendCurrentTickers(ws);
+      }
+      
+      // Handle incoming messages (for price updates from Rust service)
+      ws.on('message', (data) => {
+        try {
+          const message = JSON.parse(data);
+          this.handleIncomingMessage(message);
+        } catch (error) {
+          console.error('Error parsing WebSocket message:', error);
+        }
+      });
       
       ws.on('close', () => {
         console.log('Client disconnected from ticker WebSocket');
@@ -68,17 +81,28 @@ class TickerWebSocketServer {
     try {
       const result = await this.pool.query(`
         SELECT 
-          ticker,
-          exchange,
-          mention_count,
-          detection_confidence,
-          ai_confidence,
-          first_mention_timestamp,
-          first_mention_author,
-          is_genuine_stock
-        FROM stocks 
-        WHERE is_genuine_stock = true 
-        AND detection_confidence >= 0.70
+          t.symbol as ticker,
+          t.exchange,
+          COUNT(DISTINCT td.message_id) as mention_count,
+          AVG(td.confidence_score) as detection_confidence,
+          MIN(m.discord_timestamp) as first_mention_timestamp,
+          (
+            SELECT a.username
+            FROM ticker_detections td2
+            JOIN messages m2 ON td2.message_id = m2.id
+            JOIN authors a ON m2.author_id = a.id
+            WHERE td2.ticker_symbol = t.symbol
+            ORDER BY m2.discord_timestamp ASC
+            LIMIT 1
+          ) as first_mention_author
+        FROM tickers t
+        JOIN ticker_detections td ON t.symbol = td.ticker_symbol
+        JOIN messages m ON td.message_id = m.id
+        LEFT JOIN ticker_blacklist bl ON t.symbol = bl.ticker
+        WHERE td.confidence_score >= 0.70
+        AND (bl.ticker IS NULL OR NOT bl.is_permanent)
+        AND m.discord_timestamp >= date_trunc('day', NOW() AT TIME ZONE 'America/Chicago') AT TIME ZONE 'America/Chicago'
+        GROUP BY t.symbol, t.exchange
         ORDER BY mention_count DESC, first_mention_timestamp DESC
         LIMIT 50
       `);
@@ -119,16 +143,25 @@ class TickerWebSocketServer {
     try {
       const result = await this.pool.query(`
         SELECT 
-          ticker,
-          exchange,
-          mention_count,
-          detection_confidence,
-          ai_confidence,
-          first_mention_timestamp,
-          first_mention_author,
-          is_genuine_stock
-        FROM stocks 
-        WHERE ticker = $1
+          t.symbol as ticker,
+          t.exchange,
+          COUNT(DISTINCT td.message_id) as mention_count,
+          AVG(td.confidence_score) as detection_confidence,
+          MIN(m.discord_timestamp) as first_mention_timestamp,
+          (
+            SELECT a.username
+            FROM ticker_detections td2
+            JOIN messages m2 ON td2.message_id = m2.id
+            JOIN authors a ON m2.author_id = a.id
+            WHERE td2.ticker_symbol = t.symbol
+            ORDER BY m2.discord_timestamp ASC
+            LIMIT 1
+          ) as first_mention_author
+        FROM tickers t
+        JOIN ticker_detections td ON t.symbol = td.ticker_symbol
+        JOIN messages m ON td.message_id = m.id
+        WHERE t.symbol = $1
+        GROUP BY t.symbol, t.exchange
       `, [ticker]);
       
       if (result.rows.length > 0) {
@@ -137,6 +170,76 @@ class TickerWebSocketServer {
     } catch (error) {
       console.error('Error triggering ticker update:', error);
     }
+  }
+
+  // Handle incoming messages from clients (including Rust service)
+  handleIncomingMessage(message) {
+    // Check if this is a price update from the Rust service
+    if (message.symbol && message.price && message.timestamp) {
+      this.handlePriceUpdate(message);
+    }
+  }
+
+  // Handle price updates from Rust service
+  handlePriceUpdate(priceUpdate) {
+    const { symbol, price, timestamp } = priceUpdate;
+    
+    // Store the latest price
+    this.priceData.set(symbol, {
+      price: price,
+      timestamp: timestamp,
+      lastUpdated: new Date().toISOString()
+    });
+    
+    // Broadcast to all connected frontend clients
+    this.broadcastPriceUpdate({
+      type: 'live_price',
+      symbol: symbol,
+      price: price,
+      timestamp: timestamp,
+      source: 'databento'
+    });
+    
+    console.log(`Updated live price: ${symbol} @ $${price.toFixed(4)}`);
+  }
+
+  // Broadcast live price updates from Rust service
+  broadcastPriceUpdate(priceData) {
+    const message = {
+      type: 'live_price',
+      data: priceData,
+      timestamp: new Date().toISOString()
+    };
+    
+    const messageStr = JSON.stringify(message);
+    
+    this.clients.forEach(ws => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(messageStr);
+      }
+    });
+    
+    console.log(`Broadcasted live price: ${priceData.symbol} @ $${priceData.price}`);
+  }
+
+  // Get current prices for a symbol or all symbols
+  getPrices(symbols = null) {
+    if (!symbols) {
+      return Object.fromEntries(this.priceData);
+    }
+    
+    const result = {};
+    if (Array.isArray(symbols)) {
+      symbols.forEach(symbol => {
+        if (this.priceData.has(symbol)) {
+          result[symbol] = this.priceData.get(symbol);
+        }
+      });
+    } else if (this.priceData.has(symbols)) {
+      result[symbols] = this.priceData.get(symbols);
+    }
+    
+    return result;
   }
 
   close() {

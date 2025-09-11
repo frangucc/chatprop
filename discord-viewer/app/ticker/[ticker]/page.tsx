@@ -58,6 +58,9 @@ export default function TickerChatsPage() {
   const [livePrices, setLivePrices] = useState<Map<string, { price: number; ts: number | null }>>(new Map());
   const [nowTick, setNowTick] = useState<number>(Date.now());
   const [showSquawkModal, setShowSquawkModal] = useState(false);
+  const [currentOffset, setCurrentOffset] = useState(0);
+  const [pageSize] = useState(100);
+  const [hasMore, setHasMore] = useState(true);
   const router = useRouter();
 
   // Price formatter: truncate to 2 decimals (no rounding)
@@ -211,29 +214,63 @@ export default function TickerChatsPage() {
     }
   }, [messages, ticker]);
 
-  const fetchTickerMessages = async () => {
-    setLoading(true);
+  const fetchTickerMessages = async (isLoadMore = false) => {
+    if (isLoadMore) {
+      setLoadingMore(true);
+    } else {
+      setLoading(true);
+      setCurrentOffset(0); // Reset pagination for new queries
+      setHasMore(true); // Reset hasMore flag
+    }
+    
     try {
       const tradersParam = selectedTraders.length > 0 
         ? `&traders=${selectedTraders.map(t => t.username).join(',')}` 
         : '';
       const rangeParam = dateRange !== 'all' ? `&range=${dateRange}` : '';
+      const paginationParams = `&limit=${pageSize}&offset=${isLoadMore ? currentOffset : 0}`;
+      
       // Use the new messages API that works with the clean database
-      const response = await fetch(`/api/messages-v2?ticker=${ticker}${tradersParam}${rangeParam}`);
+      const response = await fetch(`/api/messages-v2?ticker=${ticker}${tradersParam}${rangeParam}${paginationParams}`);
       const data = await response.json();
       
       if (response.ok) {
-        setMessages(data.messages);
+        if (isLoadMore) {
+          // Append new messages to existing ones
+          setMessages(prevMessages => [...prevMessages, ...data.messages]);
+          const newOffset = currentOffset + data.messages.length;
+          setCurrentOffset(newOffset);
+          // Check if we've loaded all messages
+          setHasMore(data.messages.length === pageSize && newOffset < data.total);
+        } else {
+          // Replace messages for fresh queries
+          setMessages(data.messages);
+          setCurrentOffset(data.messages.length);
+          setHasMore(data.messages.length === pageSize && data.messages.length < data.total);
+        }
+        
         setTotal(data.total);
-        // Set first mention price and author from API response
-        setFirstMentionPrice(data.firstMentionPrice);
-        setFirstMentionAuthor(data.firstMentionAuthor);
+        // Set first mention price and author from API response (only for fresh queries)
+        if (!isLoadMore) {
+          setFirstMentionPrice(data.firstMentionPrice);
+          setFirstMentionAuthor(data.firstMentionAuthor);
+        }
       }
     } catch (error) {
       console.error('Error fetching ticker messages:', error);
     } finally {
-      setLoading(false);
+      if (isLoadMore) {
+        setLoadingMore(false);
+      } else {
+        setLoading(false);
+      }
     }
+  };
+
+  // Load more messages function
+  const loadMoreMessages = async () => {
+    if (!hasMore || loadingMore) return;
+    await fetchTickerMessages(true);
   };
 
   // Update URL with current state
@@ -259,6 +296,7 @@ export default function TickerChatsPage() {
   // Handle trader filter changes
   const handleTradersChange = (traders: Trader[]) => {
     setSelectedTraders(traders);
+    updateUrl(traders, isDarkMode);
   };
 
   const handleDateRangeChange = (range: string) => {
@@ -312,9 +350,10 @@ export default function TickerChatsPage() {
     <div className={`min-h-screen py-8 ${isDarkMode ? 'bg-[#181717]' : 'bg-gray-50'}`}>
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         {/* Header */}
-        <div className={`shadow-sm rounded-lg mb-6 p-6 ${isDarkMode ? 'bg-gray-800' : 'bg-white'}`}>
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-4">
+        <div className={`shadow-sm rounded-lg mb-6 p-4 sm:p-6 ${isDarkMode ? 'bg-gray-800' : 'bg-white'}`}>
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+            {/* Left side - Back button and ticker */}
+            <div className="flex items-center gap-3 sm:gap-4">
               <button
                 onClick={() => {
                   // Navigate directly to /stocks with preserved filters
@@ -334,39 +373,20 @@ export default function TickerChatsPage() {
                 className={`p-2 rounded-lg transition-colors ${isDarkMode ? 'hover:bg-gray-700 text-white' : 'hover:bg-gray-100 text-gray-600'}`}
                 aria-label="Back to stocks"
               >
-                <FaArrowLeft className="w-5 h-5" />
+                <FaArrowLeft className="w-4 h-4 sm:w-5 sm:h-5" />
               </button>
               <div>
-                <h1 className={`text-4xl font-black ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>${ticker}</h1>
-                <p className={`${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>All messages mentioning this ticker</p>
+                <h1 className={`text-2xl sm:text-4xl font-black ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>${ticker}</h1>
               </div>
             </div>
             
-            {/* Controls and Price Display Section */}
-            <div className="flex items-start gap-6">
-              {/* Squawk Report Button */}
-              <div className="flex flex-col items-end">
-                <button
-                  onClick={() => setShowSquawkModal(true)}
-                  className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors ${
-                    isDarkMode
-                      ? 'bg-blue-600 hover:bg-blue-700 text-white'
-                      : 'bg-blue-600 hover:bg-blue-700 text-white'
-                  }`}
-                  title="Generate AI-powered squawk report"
-                >
-                  <FaFileAlt className="w-4 h-4" />
-                  Squawk Report
-                </button>
-                <p className={`text-xs mt-1 ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-                  AI trading analysis
-                </p>
-              </div>
+            {/* Right side - Price Display and Actions */}
+            <div className="flex flex-col sm:flex-row items-start sm:items-start gap-3 sm:gap-6">
               {/* Last Price Display */}
-              <div className="text-right">
-                <p className={`text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>Last price</p>
+              <div className="text-left sm:text-right">
+                <p className={`text-xs sm:text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>Last price</p>
                 <div className="flex items-center gap-2">
-                  <div className={`text-3xl font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
+                  <div className={`text-xl sm:text-3xl font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
                     {livePrices.has(ticker.toUpperCase()) 
                       ? `$${formatPriceTrunc2(livePrices.get(ticker.toUpperCase())!.price)}`
                       : '-'}
@@ -381,15 +401,28 @@ export default function TickerChatsPage() {
                       })()} 
                     </div>
                   )}
+                  {/* Squawk Report Button (moved here, smaller) */}
+                  <button
+                    onClick={() => setShowSquawkModal(true)}
+                    className={`ml-2 flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm transition-colors ${
+                      isDarkMode
+                        ? 'bg-blue-600 hover:bg-blue-700 text-white'
+                        : 'bg-blue-600 hover:bg-blue-700 text-white'
+                    }`}
+                    title="Generate AI-powered squawk report"
+                  >
+                    <FaFileAlt className="w-3 h-3" />
+                    <span className="hidden sm:inline">Squawk</span>
+                  </button>
                 </div>
               </div>
               
               {/* First Mention Price Display */}
               {firstMentionPrice && (
-                <div className="text-right">
-                  <p className={`text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>First mention price</p>
-                  <div className="flex items-center gap-4">
-                    <div className={`text-3xl font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
+                <div className="text-left sm:text-right">
+                  <p className={`text-xs sm:text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>First mention price</p>
+                  <div className="flex items-center gap-2 sm:gap-4">
+                    <div className={`text-xl sm:text-3xl font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
                       {firstMentionPrice}
                     </div>
                     {firstMentionAuthor && (
@@ -405,15 +438,15 @@ export default function TickerChatsPage() {
         </div>
 
         {/* Date Range and Trader Filter */}
-        <div className={`shadow-sm rounded-lg mb-6 p-6 ${isDarkMode ? 'bg-gray-800' : 'bg-white'}`}>
+        <div className={`shadow-sm rounded-lg mb-6 p-4 sm:p-6 ${isDarkMode ? 'bg-gray-800' : 'bg-white'}`}>
           {/* Date Range Buttons */}
-          <div className="mb-6">
-            <div className="flex flex-wrap gap-2">
+          <div className="mb-4 sm:mb-6">
+            <div className="grid grid-cols-4 gap-1 sm:gap-2">
               {['today', 'week', 'month', 'all'].map((range) => (
                 <button
                   key={range}
                   onClick={() => handleDateRangeChange(range)}
-                  className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                  className={`px-2 py-2 sm:px-4 rounded-lg text-xs sm:text-sm font-medium transition-colors ${
                     dateRange === range
                       ? isDarkMode
                         ? 'bg-blue-600 text-white'
@@ -423,20 +456,29 @@ export default function TickerChatsPage() {
                         : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
                   }`}
                 >
-                  {range === 'today' ? 'Today' : range === 'week' ? 'This Week' : range === 'month' ? 'This Month' : 'All Time'}
+                  {range === 'today' ? 'Today' : range === 'week' ? 'Week' : range === 'month' ? 'Month' : 'All'}
                 </button>
               ))}
             </div>
           </div>
           
-          <TraderFilter
-            selectedTraders={selectedTraders}
-            onTradersChange={handleTradersChange}
-            placeholder={`Filter messages by trader for ${ticker}...`}
-            isDarkMode={isDarkMode}
-          />
+          <div className={showSquawkModal ? 'hidden' : ''}>
+            <TraderFilter
+              selectedTraders={selectedTraders}
+              onTradersChange={handleTradersChange}
+              placeholder={`Filter messages by trader for ${ticker}...`}
+              isDarkMode={isDarkMode}
+            />
+          </div>
         </div>
 
+
+        {/* Messages Section Header */}
+        <div className="mb-4">
+          <h2 className={`text-lg font-semibold ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+            All messages mentioning ${ticker}
+          </h2>
+        </div>
 
         {/* Messages */}
         <div className="space-y-4">
@@ -492,11 +534,11 @@ export default function TickerChatsPage() {
         </div>
         
         {/* Load More Button */}
-        {!loading && messages.length > 0 && messages.length % 50 === 0 && (
+        {!loading && messages.length > 0 && hasMore && (
           <div className="text-center mt-8">
             <button
-              onClick={() => console.log('Load more implementation needed')}
-              disabled={loadingMore}
+              onClick={loadMoreMessages}
+              disabled={loadingMore || !hasMore}
               className={`px-6 py-2 rounded-lg transition-colors disabled:opacity-50 ${
                 isDarkMode 
                   ? 'bg-blue-600 text-white hover:bg-blue-700' 

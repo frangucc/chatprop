@@ -117,7 +117,7 @@ export async function POST(request: NextRequest) {
     // Fetch current price if available
     let currentPrice = null;
     try {
-      const baseUrl = process.env.NEXT_PUBLIC_API_URL || (process.env.NODE_ENV === 'production' ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : 'http://localhost:3000');
+      const baseUrl = process.env.NODE_ENV === 'production' ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : 'http://localhost:3000';
       const priceResponse = await fetch(`${baseUrl}/api/live/prices?symbols=${ticker.toUpperCase()}`);
       if (priceResponse.ok) {
         const priceData = await priceResponse.json();
@@ -138,7 +138,7 @@ export async function POST(request: NextRequest) {
       const dateStr = today.toISOString().split('T')[0]; // YYYY-MM-DD format
       
       // Try to fetch detailed price data from Databento/chart API
-      const baseUrl = process.env.NEXT_PUBLIC_API_URL || (process.env.NODE_ENV === 'production' ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : 'http://localhost:3000');
+      const baseUrl = process.env.NODE_ENV === 'production' ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : 'http://localhost:3000';
       const chartResponse = await fetch(`${baseUrl}/api/chart/${ticker.toUpperCase()}?timeframe=5m&date=${dateStr}`);
       if (chartResponse.ok) {
         const chartData = await chartResponse.json();
@@ -248,17 +248,16 @@ Key Takeaways:
 Key Takeaways:
 [Same bullet points with spoken dollar formats]"
 
-Return JSON format:
+IMPORTANT: Return ONLY the JSON object with no additional text before or after:
+
 {
   "readable": "readable version text here",
   "audio": "audio optimized version text here"
-}
-
-THE HAS JUICE SQUAWK REPORT:`;
+}`;
 
     // Generate report using Claude
     const completion = await anthropic.messages.create({
-      model: 'claude-3-5-sonnet-20241210',
+      model: 'claude-3-5-sonnet-20241022',
       max_tokens: 1000,
       messages: [
         {
@@ -273,22 +272,37 @@ THE HAS JUICE SQUAWK REPORT:`;
     // Try to parse JSON response, fallback to treating as readable text
     let reportData;
     try {
+      // First try to parse the response directly
       reportData = JSON.parse(reportText);
       if (!reportData.readable || !reportData.audio) {
         throw new Error('Invalid format');
       }
     } catch (error) {
-      // Fallback: treat the entire response as readable version
-      reportData = {
-        readable: reportText,
-        audio: reportText.replace(/\$/g, '').replace(/\b(\d+)\.(\d{2})\b/g, (match, dollars, cents) => {
-          const dollarNum = parseInt(dollars);
-          const centNum = parseInt(cents);
-          if (dollarNum === 0) return `${centNum} cents`;
-          if (centNum === 0) return `${dollarNum} dollars`;
-          return `${dollarNum} ${centNum}`;
-        })
-      };
+      // If direct parsing fails, try to extract JSON from within the response
+      try {
+        const jsonMatch = reportText.match(/\{[\s\S]*"readable"[\s\S]*"audio"[\s\S]*\}/);
+        if (jsonMatch) {
+          reportData = JSON.parse(jsonMatch[0]);
+          if (!reportData.readable || !reportData.audio) {
+            throw new Error('Invalid extracted format');
+          }
+        } else {
+          throw new Error('No JSON found in response');
+        }
+      } catch (extractError) {
+        // Final fallback: treat the entire response as readable version
+        console.log('Could not parse JSON response, using fallback:', extractError);
+        reportData = {
+          readable: reportText,
+          audio: reportText.replace(/\$/g, '').replace(/\b(\d+)\.(\d{2})\b/g, (match, dollars, cents) => {
+            const dollarNum = parseInt(dollars);
+            const centNum = parseInt(cents);
+            if (dollarNum === 0) return `${centNum} cents`;
+            if (centNum === 0) return `${dollarNum} dollars`;
+            return `${dollarNum} ${centNum}`;
+          })
+        };
+      }
     }
 
     return NextResponse.json({
